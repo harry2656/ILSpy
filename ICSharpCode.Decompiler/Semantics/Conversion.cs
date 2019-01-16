@@ -17,6 +17,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+using System.Collections.Immutable;
+using System.Linq;
 using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.Semantics
@@ -68,12 +70,14 @@ namespace ICSharpCode.Decompiler.Semantics
 		
 		public static readonly Conversion BoxingConversion = new BuiltinConversion(true, 7);
 		public static readonly Conversion UnboxingConversion = new BuiltinConversion(false, 8);
-		
+
 		/// <summary>
 		/// C# 'as' cast.
 		/// </summary>
 		public static readonly Conversion TryCast = new BuiltinConversion(false, 9);
-		
+
+		public static readonly Conversion ImplicitInterpolatedStringConversion = new BuiltinConversion(true, 10);
+
 		public static Conversion UserDefinedConversion(IMethod operatorMethod, bool isImplicit, Conversion conversionBeforeUserDefinedOperator, Conversion conversionAfterUserDefinedOperator, bool isLifted = false, bool isAmbiguous = false)
 		{
 			if (operatorMethod == null)
@@ -93,6 +97,11 @@ namespace ICSharpCode.Decompiler.Semantics
 			if (chosenMethod == null)
 				throw new ArgumentNullException("chosenMethod");
 			return new MethodGroupConv(chosenMethod, isVirtualMethodLookup, delegateCapturesFirstArgument, isValid: false);
+		}
+
+		public static Conversion TupleConversion(ImmutableArray<Conversion> conversions)
+		{
+			return new TupleConv(conversions);
 		}
 		#endregion
 		
@@ -220,7 +229,9 @@ namespace ICSharpCode.Decompiler.Semantics
 			public override bool IsTryCast {
 				get { return type == 9; }
 			}
-			
+
+			public override bool IsInterpolatedStringConversion => type == 10;
+
 			public override string ToString()
 			{
 				string name = null;
@@ -250,6 +261,8 @@ namespace ICSharpCode.Decompiler.Semantics
 						return "unboxing conversion";
 					case 9:
 						return "try cast";
+					case 10:
+						return "interpolated string";
 				}
 				return (isImplicit ? "implicit " : "explicit ") + name + " conversion";
 			}
@@ -376,6 +389,43 @@ namespace ICSharpCode.Decompiler.Semantics
 				return method.GetHashCode();
 			}
 		}
+		
+		sealed class TupleConv : Conversion
+		{
+			public override bool IsImplicit { get; }
+			public override bool IsExplicit => !IsImplicit;
+			public override ImmutableArray<Conversion> ElementConversions { get; }
+			public override bool IsTupleConversion => true;
+
+			public TupleConv(ImmutableArray<Conversion> elementConversions)
+			{
+				this.ElementConversions = elementConversions;
+				this.IsImplicit = elementConversions.All(c => c.IsImplicit);
+			}
+
+			public override bool Equals(Conversion other)
+			{
+				return other is TupleConv o
+					&& ElementConversions.SequenceEqual(o.ElementConversions);
+			}
+
+			public override int GetHashCode()
+			{
+				unchecked {
+					int hash = 0;
+					foreach (var conv in ElementConversions) {
+						hash *= 31;
+						hash += conv.GetHashCode();
+					}
+					return hash;
+				}
+			}
+
+			public override string ToString()
+			{
+				return (IsImplicit ? "implicit " : "explicit ") + " tuple conversion";
+			}
+		}
 		#endregion
 		
 		/// <summary>
@@ -451,7 +501,7 @@ namespace ICSharpCode.Decompiler.Semantics
 		public virtual bool IsNullableConversion {
 			get { return false; }
 		}
-		
+
 		/// <summary>
 		/// Gets whether this conversion is user-defined (op_Implicit or op_Explicit).
 		/// </summary>
@@ -533,7 +583,22 @@ namespace ICSharpCode.Decompiler.Semantics
 		public virtual IMethod Method {
 			get { return null; }
 		}
-		
+
+		/// <summary>
+		/// Gets whether this conversion is a tuple conversion.
+		/// </summary>
+		public virtual bool IsTupleConversion => false;
+
+		/// <summary>
+		/// Gets whether this is an interpolated string conversion to <see cref="IFormattable" /> or <see cref="FormattableString"/>.
+		/// </summary>
+		public virtual bool IsInterpolatedStringConversion => false;
+
+		/// <summary>
+		/// For a tuple conversion, gets the individual tuple element conversions.
+		/// </summary>
+		public virtual ImmutableArray<Conversion> ElementConversions => default(ImmutableArray<Conversion>);
+
 		public override sealed bool Equals(object obj)
 		{
 			return Equals(obj as Conversion);

@@ -39,6 +39,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		void VisitDirectionExpression(DirectionExpression directionExpression);
 		void VisitIdentifierExpression(IdentifierExpression identifierExpression);
 		void VisitIndexerExpression(IndexerExpression indexerExpression);
+		void VisitInterpolatedStringExpression(InterpolatedStringExpression interpolatedStringExpression);
 		void VisitInvocationExpression(InvocationExpression invocationExpression);
 		void VisitIsExpression(IsExpression isExpression);
 		void VisitLambdaExpression(LambdaExpression lambdaExpression);
@@ -55,6 +56,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		void VisitStackAllocExpression(StackAllocExpression stackAllocExpression);
 		void VisitThisReferenceExpression(ThisReferenceExpression thisReferenceExpression);
 		void VisitThrowExpression(ThrowExpression throwExpression);
+		void VisitTupleExpression(TupleExpression tupleExpression);
 		void VisitTypeOfExpression(TypeOfExpression typeOfExpression);
 		void VisitTypeReferenceExpression(TypeReferenceExpression typeReferenceExpression);
 		void VisitUnaryOperatorExpression(UnaryOperatorExpression unaryOperatorExpression);
@@ -132,6 +134,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		void VisitSyntaxTree(SyntaxTree syntaxTree);
 		void VisitSimpleType(SimpleType simpleType);
 		void VisitMemberType(MemberType memberType);
+		void VisitTupleType(TupleAstType tupleType);
+		void VisitTupleTypeElement(TupleTypeElement tupleTypeElement);
 		void VisitComposedType(ComposedType composedType);
 		void VisitArraySpecifier(ArraySpecifier arraySpecifier);
 		void VisitPrimitiveType(PrimitiveType primitiveType);
@@ -147,6 +151,9 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		void VisitConstraint(Constraint constraint);
 		void VisitCSharpTokenNode(CSharpTokenNode cSharpTokenNode);
 		void VisitIdentifier(Identifier identifier);
+
+		void VisitInterpolation(Interpolation interpolation);
+		void VisitInterpolatedStringText(InterpolatedStringText interpolatedStringText);
 		
 		void VisitNullNode(AstNode nullNode);
 		void VisitErrorNode(AstNode errorNode);
@@ -173,6 +180,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitDirectionExpression(DirectionExpression directionExpression);
 		S VisitIdentifierExpression(IdentifierExpression identifierExpression);
 		S VisitIndexerExpression(IndexerExpression indexerExpression);
+		S VisitInterpolatedStringExpression(InterpolatedStringExpression interpolatedStringExpression);
 		S VisitInvocationExpression(InvocationExpression invocationExpression);
 		S VisitIsExpression(IsExpression isExpression);
 		S VisitLambdaExpression(LambdaExpression lambdaExpression);
@@ -189,6 +197,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitStackAllocExpression(StackAllocExpression stackAllocExpression);
 		S VisitThisReferenceExpression(ThisReferenceExpression thisReferenceExpression);
 		S VisitThrowExpression(ThrowExpression throwExpression);
+		S VisitTupleExpression(TupleExpression tupleExpression);
 		S VisitTypeOfExpression(TypeOfExpression typeOfExpression);
 		S VisitTypeReferenceExpression(TypeReferenceExpression typeReferenceExpression);
 		S VisitUnaryOperatorExpression(UnaryOperatorExpression unaryOperatorExpression);
@@ -266,6 +275,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitSyntaxTree(SyntaxTree syntaxTree);
 		S VisitSimpleType(SimpleType simpleType);
 		S VisitMemberType(MemberType memberType);
+		S VisitTupleType(TupleAstType tupleType);
+		S VisitTupleTypeElement(TupleTypeElement tupleTypeElement);
 		S VisitComposedType(ComposedType composedType);
 		S VisitArraySpecifier(ArraySpecifier arraySpecifier);
 		S VisitPrimitiveType(PrimitiveType primitiveType);
@@ -281,7 +292,10 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitConstraint(Constraint constraint);
 		S VisitCSharpTokenNode(CSharpTokenNode cSharpTokenNode);
 		S VisitIdentifier(Identifier identifier);
-		
+
+		S VisitInterpolation(Interpolation interpolation);
+		S VisitInterpolatedStringText(InterpolatedStringText interpolatedStringText);
+
 		S VisitNullNode(AstNode nullNode);
 		S VisitErrorNode(AstNode errorNode);
 		S VisitPatternPlaceholder(AstNode placeholder, PatternMatching.Pattern pattern);
@@ -307,6 +321,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitDirectionExpression(DirectionExpression directionExpression, T data);
 		S VisitIdentifierExpression(IdentifierExpression identifierExpression, T data);
 		S VisitIndexerExpression(IndexerExpression indexerExpression, T data);
+		S VisitInterpolatedStringExpression(InterpolatedStringExpression interpolatedStringExpression, T data);
 		S VisitInvocationExpression(InvocationExpression invocationExpression, T data);
 		S VisitIsExpression(IsExpression isExpression, T data);
 		S VisitLambdaExpression(LambdaExpression lambdaExpression, T data);
@@ -323,6 +338,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitStackAllocExpression(StackAllocExpression stackAllocExpression, T data);
 		S VisitThisReferenceExpression(ThisReferenceExpression thisReferenceExpression, T data);
 		S VisitThrowExpression(ThrowExpression throwExpression, T data);
+		S VisitTupleExpression(TupleExpression tupleExpression, T data);
 		S VisitTypeOfExpression(TypeOfExpression typeOfExpression, T data);
 		S VisitTypeReferenceExpression(TypeReferenceExpression typeReferenceExpression, T data);
 		S VisitUnaryOperatorExpression(UnaryOperatorExpression unaryOperatorExpression, T data);
@@ -400,6 +416,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitSyntaxTree(SyntaxTree syntaxTree, T data);
 		S VisitSimpleType(SimpleType simpleType, T data);
 		S VisitMemberType(MemberType memberType, T data);
+		S VisitTupleType(TupleAstType tupleType, T data);
+		S VisitTupleTypeElement(TupleTypeElement tupleTypeElement, T data);
 		S VisitComposedType(ComposedType composedType, T data);
 		S VisitArraySpecifier(ArraySpecifier arraySpecifier, T data);
 		S VisitPrimitiveType(PrimitiveType primitiveType, T data);
@@ -415,7 +433,10 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitConstraint(Constraint constraint, T data);
 		S VisitCSharpTokenNode(CSharpTokenNode cSharpTokenNode, T data);
 		S VisitIdentifier(Identifier identifier, T data);
-		
+
+		S VisitInterpolation(Interpolation interpolation, T data);
+		S VisitInterpolatedStringText(InterpolatedStringText interpolatedStringText, T data);
+
 		S VisitNullNode(AstNode nullNode, T data);
 		S VisitErrorNode(AstNode errorNode, T data);
 		S VisitPatternPlaceholder(AstNode placeholder, PatternMatching.Pattern pattern, T data);

@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using ICSharpCode.Decompiler.IL.Transforms;
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.IL.ControlFlow
 {
@@ -43,18 +44,30 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			foreach (var block in function.Descendants.OfType<Block>()) {
 				context.CancellationToken.ThrowIfCancellationRequested();
 
-				// Remove 'nop' instructions
-				block.Instructions.RemoveAll(inst => inst.OpCode == OpCode.Nop);
-				
+				RemoveNopInstructions(block);
+
 				InlineVariableInReturnBlock(block, context);
 				// 1st pass SimplifySwitchInstruction before SimplifyBranchChains()
 				// starts duplicating return instructions.
 				SwitchDetection.SimplifySwitchInstruction(block);
 			}
 			SimplifyBranchChains(function, context);
-			CleanUpEmptyBlocks(function);
+			CleanUpEmptyBlocks(function, context);
 		}
-		
+
+		private static void RemoveNopInstructions(Block block)
+		{
+			// Move ILRanges of special nop instructions to the previous non-nop instruction.
+			for (int i = block.Instructions.Count - 1; i > 0; i--) {
+				if (block.Instructions[i] is Nop nop && nop.Kind == NopKind.Pop) {
+					block.Instructions[i - 1].AddILRange(nop.ILRange);
+				}
+			}
+
+			// Remove 'nop' instructions
+			block.Instructions.RemoveAll(inst => inst.OpCode == OpCode.Nop);
+		}
+
 		void InlineVariableInReturnBlock(Block block, ILTransformContext context)
 		{
 			// In debug mode, the C#-compiler generates 'return blocks' that
@@ -119,7 +132,10 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				} else if (targetBlock.Instructions.Count == 1 && targetBlock.Instructions[0] is Leave leave && leave.Value.MatchNop()) {
 					context.Step("Replace branch to leave with leave", branch);
 					// Replace branches to 'leave' instruction with the leave instruction
-					branch.ReplaceWith(leave.Clone());
+					var leave2 = leave.Clone();
+					if (!branch.ILRange.IsEmpty) // use the ILRange of the branch if possible
+						leave2.ILRange = branch.ILRange;
+					branch.ReplaceWith(leave2);
 				}
 				if (targetBlock.IncomingEdgeCount == 0)
 					targetBlock.Instructions.Clear(); // mark the block for deletion
@@ -129,19 +145,22 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			}
 		}
 		
-		void CleanUpEmptyBlocks(ILFunction function)
+		void CleanUpEmptyBlocks(ILFunction function, ILTransformContext context)
 		{
 			foreach (var container in function.Descendants.OfType<BlockContainer>()) {
 				foreach (var block in container.Blocks) {
 					if (block.Instructions.Count == 0)
 						continue; // block is already marked for deletion
-					while (CombineBlockWithNextBlock(container, block)) {
+					while (CombineBlockWithNextBlock(container, block, context)) {
 						// repeat combining blocks until it is no longer possible
 						// (this loop terminates because a block is deleted in every iteration)
 					}
 				}
 				// Remove return blocks that are no longer reachable:
 				container.Blocks.RemoveAll(b => b.IncomingEdgeCount == 0 && b.Instructions.Count == 0);
+				if (context.Settings.RemoveDeadCode) {
+					container.SortBlocks(deleteUnreachableBlocks: true);
+				}
 			}
 		}
 
@@ -153,7 +172,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			return targetBlock.Instructions[0].MatchReturn(out var value) && value is LdLoc;
 		}
 		
-		static bool CombineBlockWithNextBlock(BlockContainer container, Block block)
+		static bool CombineBlockWithNextBlock(BlockContainer container, Block block, ILTransformContext context)
 		{
 			Debug.Assert(container == block.Parent);
 			// Ensure the block will stay a basic block -- we don't want extended basic blocks prior to LoopDetection.
@@ -165,12 +184,35 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				return false;
 			if (br.TargetBlock == block)
 				return false; // don't inline block into itself
+			context.Step("CombineBlockWithNextBlock", br);
 			var targetBlock = br.TargetBlock;
+			if (targetBlock.ILRange.Start < block.ILRange.Start && IsDeadTrueStore(block)) {
+				// The C# compiler generates a dead store for the condition of while (true) loops.
+				block.Instructions.RemoveRange(block.Instructions.Count - 3, 2);
+			}
+
+			if (block.ILRange.IsEmpty)
+				block.ILRange = targetBlock.ILRange;
+
 			block.Instructions.Remove(br);
 			block.Instructions.AddRange(targetBlock.Instructions);
 			targetBlock.Instructions.Clear(); // mark targetBlock for deletion
 			return true;
 		}
-		
+
+		/// <summary>
+		/// Returns true if the last two instructions before the branch are storing the value 'true' into an unused variable.
+		/// </summary>
+		private static bool IsDeadTrueStore(Block block)
+		{
+			if (block.Instructions.Count < 3) return false;
+			if (!(block.Instructions.SecondToLastOrDefault() is StLoc deadStore && block.Instructions[block.Instructions.Count - 3] is StLoc tempStore))
+				return false;
+			if (!(deadStore.Variable.LoadCount == 0 && deadStore.Variable.AddressCount == 0))
+				return false;
+			if (!(deadStore.Value.MatchLdLoc(tempStore.Variable) && tempStore.Variable.IsSingleDefinition && tempStore.Variable.LoadCount == 1))
+				return false;
+			return tempStore.Value.MatchLdcI4(1) && deadStore.Variable.Type.IsKnownType(KnownTypeCode.Boolean);
+		}
 	}
 }

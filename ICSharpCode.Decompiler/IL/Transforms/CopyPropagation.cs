@@ -49,11 +49,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				if (block.Instructions[i].MatchStLoc(out v, out copiedExpr)) {
 					if (v.IsSingleDefinition && v.LoadCount == 0 && v.Kind == VariableKind.StackSlot) {
 						// dead store to stack
-						if (copiedExpr.Flags == InstructionFlags.None) {
+						if (SemanticHelper.IsPure(copiedExpr.Flags)) {
 							// no-op -> delete
+							context.Step("remove dead store to stack: no-op -> delete", block.Instructions[i]);
 							block.Instructions.RemoveAt(i--);
 						} else {
 							// evaluate the value for its side-effects
+							context.Step("remove dead store to stack: evaluate the value for its side-effects", block.Instructions[i]);
+							copiedExpr.AddILRange(block.Instructions[i].ILRange);
 							block.Instructions[i] = copiedExpr;
 						}
 					} else if (v.IsSingleDefinition && CanPerformCopyPropagation(v, copiedExpr)) {
@@ -65,6 +68,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 		static bool CanPerformCopyPropagation(ILVariable target, ILInstruction value)
 		{
+			Debug.Assert(target.StackType == value.ResultType);
+			if (target.Type.IsSmallIntegerType())
+				return false;
 			switch (value.OpCode) {
 				case OpCode.LdLoca:
 //				case OpCode.LdElema:
@@ -83,6 +89,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 							// note: the initialization by the caller is the first store -> StoreCount must be 1
 							return v.IsSingleDefinition;
 						case VariableKind.StackSlot:
+						case VariableKind.Exception: // Exception variables are normally generated as well.
 							// Variables are be copied only if both they and the target copy variable are generated,
 							// and if the variable has only a single assignment
 							return v.IsSingleDefinition && target.Kind == VariableKind.StackSlot;
@@ -102,7 +109,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			ILVariable[] uninlinedArgs = new ILVariable[copiedExpr.Children.Count];
 			for (int j = 0; j < uninlinedArgs.Length; j++) {
 				var arg = copiedExpr.Children[j];
-				var type = context.TypeSystem.Compilation.FindType(arg.ResultType.ToKnownTypeCode());
+				var type = context.TypeSystem.FindType(arg.ResultType.ToKnownTypeCode());
 				uninlinedArgs[j] = new ILVariable(VariableKind.StackSlot, type, arg.ResultType, arg.ILRange.Start) {
 					Name = "C_" + arg.ILRange.Start
 				};
@@ -118,7 +125,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				expr.ReplaceWith(clone);
 			}
 			block.Instructions.RemoveAt(i);
-			int c = ILInlining.InlineInto(block, i, aggressive: false, context: context);
+			int c = ILInlining.InlineInto(block, i, InliningOptions.None, context: context);
 			i -= c + 1;
 		}
 	}

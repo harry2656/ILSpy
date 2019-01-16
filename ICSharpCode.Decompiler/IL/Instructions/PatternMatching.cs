@@ -27,8 +27,18 @@ namespace ICSharpCode.Decompiler.IL
 			return OpCode == OpCode.LdcI4 && ((LdcI4)this).Value == val;
 		}
 
+		public bool MatchLdcF4(float value)
+		{
+			return MatchLdcF4(out var v) && v == value;
+		}
+
+		public bool MatchLdcF8(double value)
+		{
+			return MatchLdcF8(out var v) && v == value;
+		}
+
 		/// <summary>
-		/// Matches either LdcI4 or LdcI8.
+		/// Matches ldc.i4, ldc.i8, and extending conversions.
 		/// </summary>
 		public bool MatchLdcI(out long val)
 		{
@@ -38,7 +48,23 @@ namespace ICSharpCode.Decompiler.IL
 				val = intVal;
 				return true;
 			}
+			if (this is Conv conv) {
+				if (conv.Kind == ConversionKind.SignExtend) {
+					return conv.Argument.MatchLdcI(out val);
+				} else if (conv.Kind == ConversionKind.ZeroExtend && conv.InputType == StackType.I4) {
+					if (conv.Argument.MatchLdcI(out val)) {
+						// clear top 32 bits
+						val &= uint.MaxValue;
+						return true;
+					}
+				}
+			}
 			return false;
+		}
+
+		public bool MatchLdcI(long val)
+		{
+			return MatchLdcI(out long v) && v == val;
 		}
 
 		public bool MatchLdLoc(ILVariable variable)
@@ -201,7 +227,22 @@ namespace ICSharpCode.Decompiler.IL
 			falseInst = null;
 			return false;
 		}
-		
+
+		public bool MatchIfInstructionPositiveCondition(out ILInstruction condition, out ILInstruction trueInst, out ILInstruction falseInst)
+		{
+			if (MatchIfInstruction(out condition, out trueInst, out falseInst)) {
+				// Swap trueInst<>falseInst for every logic.not in the condition.
+				while (condition.MatchLogicNot(out var arg)) {
+					condition = arg;
+					ILInstruction tmp = trueInst;
+					trueInst = falseInst;
+					falseInst = tmp;
+				}
+				return true;
+			}
+			return false;
+		}
+
 		/// <summary>
 		/// Matches an if instruction where the false instruction is a nop.
 		/// </summary>
@@ -286,11 +327,16 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		public bool MatchCompEquals(out ILInstruction left, out ILInstruction right)
 		{
-			if (this.MatchLogicNot(out var arg) && arg is Comp nestedComp && nestedComp.Kind == ComparisonKind.Inequality && !nestedComp.IsLifted) {
-				left = nestedComp.Left;
-				right = nestedComp.Right;
-				return true;
-			} else if (this is Comp comp && comp.Kind == ComparisonKind.Equality && !comp.IsLifted) {
+			ILInstruction thisInst = this;
+			var compKind = ComparisonKind.Equality;
+			while (thisInst.MatchLogicNot(out var arg) && arg is Comp) {
+				thisInst = arg;
+				if (compKind == ComparisonKind.Equality)
+					compKind = ComparisonKind.Inequality;
+				else
+					compKind = ComparisonKind.Equality;
+			}
+			if (thisInst is Comp comp && comp.Kind == compKind && !comp.IsLifted) {
 				left = comp.Left;
 				right = comp.Right;
 				return true;
@@ -302,15 +348,62 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		/// <summary>
+		/// Matches 'comp(arg == ldnull)'
+		/// </summary>
+		public bool MatchCompEqualsNull(out ILInstruction arg)
+		{
+			if (!MatchCompEquals(out var left, out var right)) {
+				arg = null;
+				return false;
+			}
+			if (right.MatchLdNull()) {
+				arg = left;
+				return true;
+			} else if (left.MatchLdNull()) {
+				arg = right;
+				return true;
+			} else {
+				arg = null;
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Matches 'comp(arg != ldnull)'
+		/// </summary>
+		public bool MatchCompNotEqualsNull(out ILInstruction arg)
+		{
+			if (!MatchCompNotEquals(out var left, out var right)) {
+				arg = null;
+				return false;
+			}
+			if (right.MatchLdNull()) {
+				arg = left;
+				return true;
+			} else if (left.MatchLdNull()) {
+				arg = right;
+				return true;
+			} else {
+				arg = null;
+				return false;
+			}
+		}
+
+		/// <summary>
 		/// Matches comp(left != right) or logic.not(comp(left == right)).
 		/// </summary>
 		public bool MatchCompNotEquals(out ILInstruction left, out ILInstruction right)
 		{
-			if (this.MatchLogicNot(out var arg) && arg is Comp nestedComp && nestedComp.Kind == ComparisonKind.Equality && !nestedComp.IsLifted) {
-				left = nestedComp.Left;
-				right = nestedComp.Right;
-				return true;
-			} else if (this is Comp comp && comp.Kind == ComparisonKind.Inequality && !comp.IsLifted) {
+			ILInstruction thisInst = this;
+			var compKind = ComparisonKind.Inequality;
+			while (thisInst.MatchLogicNot(out var arg) && arg is Comp) {
+				thisInst = arg;
+				if (compKind == ComparisonKind.Equality)
+					compKind = ComparisonKind.Inequality;
+				else
+					compKind = ComparisonKind.Equality;
+			}
+			if (thisInst is Comp comp && comp.Kind == compKind && !comp.IsLifted) {
 				left = comp.Left;
 				right = comp.Right;
 				return true;
@@ -324,8 +417,10 @@ namespace ICSharpCode.Decompiler.IL
 		public bool MatchLdFld(out ILInstruction target, out IField field)
 		{
 			if (this is LdObj ldobj && ldobj.Target is LdFlda ldflda && ldobj.UnalignedPrefix == 0 && !ldobj.IsVolatile) {
-				target = ldflda.Target;
 				field = ldflda.Field;
+				if (field.DeclaringType.IsReferenceType == true || !ldflda.Target.MatchAddressOf(out target)) {
+					target = ldflda.Target;
+				}
 				return true;
 			}
 			target = null;

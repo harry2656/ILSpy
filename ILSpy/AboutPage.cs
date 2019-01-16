@@ -49,7 +49,7 @@ namespace ICSharpCode.ILSpy
 			Display(decompilerTextView);
 		}
 		
-		static readonly Uri UpdateUrl = new Uri("http://www.ilspy.net/updates.xml");
+		static readonly Uri UpdateUrl = new Uri("https://ilspy.net/updates.xml");
 		const string band = "stable";
 		
 		static AvailableVersionInfo latestAvailableVersion;
@@ -81,7 +81,7 @@ namespace ICSharpCode.ILSpy
 					};
 				});
 			output.WriteLine();
-			foreach (var plugin in App.CompositionContainer.GetExportedValues<IAboutPageAddition>())
+			foreach (var plugin in App.ExportProvider.GetExportedValues<IAboutPageAddition>())
 				plugin.Write(output);
 			output.WriteLine();
 			using (Stream s = typeof(AboutPage).Assembly.GetManifestResourceStream(typeof(AboutPage), "README.txt")) {
@@ -236,7 +236,7 @@ namespace ICSharpCode.ILSpy
 					if (automaticUpdateCheckEnabled != value) {
 						automaticUpdateCheckEnabled = value;
 						Save();
-						OnPropertyChanged("AutomaticUpdateCheckEnabled");
+						OnPropertyChanged(nameof(AutomaticUpdateCheckEnabled));
 					}
 				}
 			}
@@ -249,7 +249,7 @@ namespace ICSharpCode.ILSpy
 					if (lastSuccessfulUpdateCheck != value) {
 						lastSuccessfulUpdateCheck = value;
 						Save();
-						OnPropertyChanged("LastSuccessfulUpdateCheck");
+						OnPropertyChanged(nameof(LastSuccessfulUpdateCheck));
 					}
 				}
 			}

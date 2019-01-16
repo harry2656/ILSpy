@@ -16,6 +16,7 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -37,17 +38,13 @@ namespace ICSharpCode.Decompiler.IL
 	/// 1) Blocks in block containers. Used as targets for Branch instructions.
 	/// 2) Blocks to group a bunch of statements, e.g. the TrueInst of an IfInstruction.
 	/// 3) Inline blocks that evaluate to a value, e.g. for array initializers.
-	/// 
-	/// TODO: consider splitting inline blocks (with FinalInstruction) from those
-	/// used in containers for control flow purposes -- these are very different things
-	/// which should not share a class.
 	/// </summary>
 	partial class Block : ILInstruction
 	{
 		public static readonly SlotInfo InstructionSlot = new SlotInfo("Instruction", isCollection: true);
 		public static readonly SlotInfo FinalInstructionSlot = new SlotInfo("FinalInstruction");
 		
-		public readonly BlockType Type;
+		public readonly BlockKind Kind;
 		public readonly InstructionCollection<ILInstruction> Instructions;
 		ILInstruction finalInstruction;
 		
@@ -67,6 +64,9 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		/// <remarks>
 		/// Blocks in containers must have 'Nop' as a final instruction.
+		/// 
+		/// Note that the FinalInstruction is included in Block.Children,
+		/// but not in Block.Instructions!
 		/// </remarks>
 		public ILInstruction FinalInstruction {
 			get {
@@ -85,16 +85,16 @@ namespace ICSharpCode.Decompiler.IL
 				finalInstruction.ChildIndex = Instructions.Count;
 		}
 		
-		public Block(BlockType type = BlockType.ControlFlow) : base(OpCode.Block)
+		public Block(BlockKind kind = BlockKind.ControlFlow) : base(OpCode.Block)
 		{
-			this.Type = type;
+			this.Kind = kind;
 			this.Instructions = new InstructionCollection<ILInstruction>(this, 0);
 			this.FinalInstruction = new Nop();
 		}
 		
 		public override ILInstruction Clone()
 		{
-			Block clone = new Block(Type);
+			Block clone = new Block(Kind);
 			clone.ILRange = this.ILRange;
 			clone.Instructions.AddRange(this.Instructions.Select(inst => inst.Clone()));
 			clone.FinalInstruction = this.FinalInstruction.Clone();
@@ -107,6 +107,30 @@ namespace ICSharpCode.Decompiler.IL
 			for (int i = 0; i < Instructions.Count - 1; i++) {
 				// only the last instruction may have an unreachable endpoint
 				Debug.Assert(!Instructions[i].HasFlag(InstructionFlags.EndPointUnreachable));
+			}
+			switch (this.Kind) {
+				case BlockKind.ControlFlow:
+					Debug.Assert(finalInstruction.OpCode == OpCode.Nop);
+					break;
+				case BlockKind.CallInlineAssign:
+					Debug.Assert(MatchInlineAssignBlock(out _, out _));
+					break;
+				case BlockKind.CallWithNamedArgs:
+					Debug.Assert(finalInstruction is CallInstruction);
+					foreach (var inst in Instructions) {
+						var stloc = inst as StLoc;
+						Debug.Assert(stloc != null, "Instructions in CallWithNamedArgs must be assignments");
+						Debug.Assert(stloc.Variable.Kind == VariableKind.NamedArgument);
+						Debug.Assert(stloc.Variable.IsSingleDefinition && stloc.Variable.LoadCount == 1);
+						Debug.Assert(stloc.Variable.LoadInstructions.Single().Parent == finalInstruction);
+					}
+					var call = (CallInstruction)finalInstruction;
+					if (call.IsInstanceCall) {
+						// special case: with instance calls, Instructions[0] must be for the this parameter
+						ILVariable v = ((StLoc)Instructions[0]).Variable;
+						Debug.Assert(call.Arguments[0].MatchLdLoc(v));
+					}
+					break;
 			}
 		}
 		
@@ -126,15 +150,23 @@ namespace ICSharpCode.Decompiler.IL
 
 		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
 		{
+			ILRange.WriteTo(output, options);
 			output.Write("Block ");
-			output.WriteDefinition(Label, this);
+			output.WriteLocalReference(Label, this, isDefinition: true);
+			if (Kind != BlockKind.ControlFlow)
+				output.Write($" ({Kind})");
 			if (Parent is BlockContainer)
 				output.Write(" (incoming: {0})", IncomingEdgeCount);
 			output.Write(' ');
 			output.MarkFoldStart("{...}");
-			output.WriteLine(" {");
+			output.WriteLine("{");
 			output.Indent();
+			int index = 0;
 			foreach (var inst in Instructions) {
+				if (options.ShowChildIndexInBlock) {
+					output.Write("[" + index + "] ");
+					index++;
+				}
 				inst.WriteTo(output, options);
 				output.WriteLine();
 			}
@@ -247,13 +279,80 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return inst;
 		}
+
+		public bool MatchInlineAssignBlock(out CallInstruction call, out ILInstruction value)
+		{
+			call = null;
+			value = null;
+			if (this.Kind != BlockKind.CallInlineAssign)
+				return false;
+			if (this.Instructions.Count != 1)
+				return false;
+			call = this.Instructions[0] as CallInstruction;
+			if (call == null || call.Arguments.Count == 0)
+				return false;
+			if (!call.Arguments.Last().MatchStLoc(out var tmp, out value))
+				return false;
+			if (!(tmp.IsSingleDefinition && tmp.LoadCount == 1))
+				return false;
+			return this.FinalInstruction.MatchLdLoc(tmp);
+		}
 	}
 	
-	public enum BlockType {
+	public enum BlockKind
+	{
+		/// <summary>
+		/// Block is used for control flow.
+		/// All blocks in block containers must have this type.
+		/// Control flow blocks cannot evaluate to a value (FinalInstruction must be Nop).
+		/// </summary>
 		ControlFlow,
+		/// <summary>
+		/// Block is used for array initializers, e.g. `new int[] { expr1, expr2 }`.
+		/// </summary>
 		ArrayInitializer,
 		CollectionInitializer,
 		ObjectInitializer,
-		PostfixOperator
+		StackAllocInitializer,
+		/// <summary>
+		/// Block is used for postfix operator on local variable.
+		/// </summary>
+		/// <remarks>
+		/// Postfix operators on non-locals use CompoundAssignmentInstruction with CompoundAssignmentType.EvaluatesToOldValue.
+		/// </remarks>
+		PostfixOperator,
+		/// <summary>
+		/// Block is used for using the result of a property setter inline.
+		/// Example: <code>Use(this.Property = value);</code>
+		/// This is only for inline assignments to property or indexers; other inline assignments work
+		/// by using the result value of the stloc/stobj instructions.
+		/// 
+		/// Constructed by TransformAssignment.
+		/// Can be deconstructed using Block.MatchInlineAssignBlock().
+		/// </summary>
+		/// <example>
+		/// Block {
+		///   call setter(..., stloc s(...))
+		///   final: ldloc s
+		/// }
+		/// </example>
+		CallInlineAssign,
+		/// <summary>
+		/// Call using named arguments.
+		/// </summary>
+		/// <remarks>
+		/// Each instruction is assigning to a new local.
+		/// The final instruction is a call.
+		/// The locals for this block have exactly one store and
+		/// exactly one load, which must be an immediate argument to the call.
+		/// </remarks>
+		/// <example>
+		/// Block {
+		///   stloc arg0 = ...
+		///   stloc arg1 = ...
+		///   final: call M(..., arg1, arg0, ...)
+		/// }
+		/// </example>
+		CallWithNamedArgs,
 	}
 }

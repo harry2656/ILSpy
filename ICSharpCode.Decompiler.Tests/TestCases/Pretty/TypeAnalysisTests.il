@@ -1,6 +1,4 @@
 
-//  Microsoft (R) .NET Framework IL Disassembler.  Version 4.0.30319.18020
-//  Copyright (c) Microsoft Corporation.  All rights reserved.
 
 
 
@@ -10,7 +8,7 @@
   .publickeytoken = (B7 7A 5C 56 19 34 E0 89 )                         // .z\V.4..
   .ver 4:0:0:0
 }
-.assembly q5z5ui4l
+.assembly TypeAnalysisTests
 {
   .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilationRelaxationsAttribute::.ctor(int32) = ( 01 00 08 00 00 00 00 00 ) 
   .custom instance void [mscorlib]System.Runtime.CompilerServices.RuntimeCompatibilityAttribute::.ctor() = ( 01 00 01 00 54 02 16 57 72 61 70 4E 6F 6E 45 78   // ....T..WrapNonEx
@@ -20,15 +18,13 @@
   .hash algorithm 0x00008004
   .ver 0:0:0:0
 }
-.module q5z5ui4l.dll
-// MVID: {E0E1769A-5636-428C-B7CE-29408F5D108F}
+.module TypeAnalysisTests.dll
 .custom instance void [mscorlib]System.Security.UnverifiableCodeAttribute::.ctor() = ( 01 00 00 00 ) 
 .imagebase 0x10000000
 .file alignment 0x00000200
 .stackreserve 0x00100000
 .subsystem 0x0003       // WINDOWS_CUI
 .corflags 0x00000001    //  ILONLY
-// Image base: 0x024D0000
 
 
 // =============== CLASS MEMBERS DECLARATION ===================
@@ -681,6 +677,263 @@
     IL_000d:  ret
   } // end of method TypeAnalysisTests::EnumDiff
 
+  .method public hidebysig instance bool 
+          CompareDelegatesByValue(class [mscorlib]System.Action a,
+                                  class [mscorlib]System.Action b) cil managed
+  {
+    // Code size       13 (0xd)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldarg.2
+    IL_0003:  call       bool [mscorlib]System.Delegate::op_Equality(class [mscorlib]System.Delegate,
+                                                                     class [mscorlib]System.Delegate)
+    IL_0008:  stloc.0
+    IL_0009:  br.s       IL_000b
+
+    IL_000b:  ldloc.0
+    IL_000c:  ret
+  } // end of method TypeAnalysisTests::CompareDelegatesByValue
+
+  .method public hidebysig instance bool 
+          CompareDelegatesByReference(class [mscorlib]System.Action a,
+                                      class [mscorlib]System.Action b) cil managed
+  {
+    // Code size       10 (0xa)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldarg.2
+    IL_0003:  ceq
+    IL_0005:  stloc.0
+    IL_0006:  br.s       IL_0008
+
+    IL_0008:  ldloc.0
+    IL_0009:  ret
+  } // end of method TypeAnalysisTests::CompareDelegatesByReference
+
+  .method public hidebysig instance bool 
+          CompareDelegateWithNull(class [mscorlib]System.Action a) cil managed
+  {
+    // Code size       10 (0xa)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldnull
+    IL_0003:  ceq
+    IL_0005:  stloc.0
+    IL_0006:  br.s       IL_0008
+
+    IL_0008:  ldloc.0
+    IL_0009:  ret
+  } // end of method TypeAnalysisTests::CompareDelegateWithNull
+
+  .method public hidebysig instance bool 
+          CompareStringsByValue(string a,
+                                string b) cil managed
+  {
+    // Code size       13 (0xd)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldarg.2
+    IL_0003:  call       bool [mscorlib]System.String::op_Equality(string,
+                                                                   string)
+    IL_0008:  stloc.0
+    IL_0009:  br.s       IL_000b
+
+    IL_000b:  ldloc.0
+    IL_000c:  ret
+  } // end of method TypeAnalysisTests::CompareStringsByValue
+
+  .method public hidebysig instance bool 
+          CompareStringsByReference(string a,
+                                    string b) cil managed
+  {
+    // Code size       10 (0xa)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldarg.2
+    IL_0003:  ceq
+    IL_0005:  stloc.0
+    IL_0006:  br.s       IL_0008
+
+    IL_0008:  ldloc.0
+    IL_0009:  ret
+  } // end of method TypeAnalysisTests::CompareStringsByReference
+
+  .method public hidebysig instance bool 
+          CompareStringWithNull(string a) cil managed
+  {
+    // Code size       10 (0xa)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldnull
+    IL_0003:  ceq
+    IL_0005:  stloc.0
+    IL_0006:  br.s       IL_0008
+
+    IL_0008:  ldloc.0
+    IL_0009:  ret
+  } // end of method TypeAnalysisTests::CompareStringWithNull
+
+  .method public hidebysig instance bool 
+          CompareType(class [mscorlib]System.Type a,
+                      class [mscorlib]System.Type b) cil managed
+  {
+    // Code size       13 (0xd)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldarg.2
+    IL_0003:  call       bool [mscorlib]System.Type::op_Equality(class [mscorlib]System.Type,
+                                                                 class [mscorlib]System.Type)
+    IL_0008:  stloc.0
+    IL_0009:  br.s       IL_000b
+
+    IL_000b:  ldloc.0
+    IL_000c:  ret
+  } // end of method TypeAnalysisTests::CompareType
+
+  .method public hidebysig instance bool 
+          CompareTypeByReference(class [mscorlib]System.Type a,
+                                 class [mscorlib]System.Type b) cil managed
+  {
+    // Code size       10 (0xa)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldarg.2
+    IL_0003:  ceq
+    IL_0005:  stloc.0
+    IL_0006:  br.s       IL_0008
+
+    IL_0008:  ldloc.0
+    IL_0009:  ret
+  } // end of method TypeAnalysisTests::CompareTypeByReference
+
+  .method public hidebysig instance bool 
+          CompareTypeWithNull(class [mscorlib]System.Type t) cil managed
+  {
+    // Code size       13 (0xd)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  ldnull
+    IL_0003:  call       bool [mscorlib]System.Type::op_Equality(class [mscorlib]System.Type,
+                                                                 class [mscorlib]System.Type)
+    IL_0008:  stloc.0
+    IL_0009:  br.s       IL_000b
+
+    IL_000b:  ldloc.0
+    IL_000c:  ret
+  } // end of method TypeAnalysisTests::CompareTypeWithNull
+
+  .method public hidebysig instance class [mscorlib]System.Attribute 
+          CallExtensionMethodViaBaseClass(class [mscorlib]System.Type 'type') cil managed
+  {
+    // Code size       12 (0xc)
+    .maxstack  1
+    .locals init (class [mscorlib]System.Attribute V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  call       !!0 [mscorlib]System.Reflection.CustomAttributeExtensions::GetCustomAttribute<class [mscorlib]System.AttributeUsageAttribute>(class [mscorlib]System.Reflection.MemberInfo)
+    IL_0007:  stloc.0
+    IL_0008:  br.s       IL_000a
+
+    IL_000a:  ldloc.0
+    IL_000b:  ret
+  } // end of method TypeAnalysisTests::CallExtensionMethodViaBaseClass
+
+  .method public hidebysig instance valuetype [mscorlib]System.Decimal 
+          ImplicitConversionToDecimal(uint8 v) cil managed
+  {
+    // Code size       12 (0xc)
+    .maxstack  1
+    .locals init (valuetype [mscorlib]System.Decimal V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  call       valuetype [mscorlib]System.Decimal [mscorlib]System.Decimal::op_Implicit(uint8)
+    IL_0007:  stloc.0
+    IL_0008:  br.s       IL_000a
+
+    IL_000a:  ldloc.0
+    IL_000b:  ret
+  } // end of method TypeAnalysisTests::ImplicitConversionToDecimal
+
+  .method public hidebysig instance valuetype [mscorlib]System.Decimal 
+          ImplicitConversionToDecimal(uint64 v) cil managed
+  {
+    // Code size       12 (0xc)
+    .maxstack  1
+    .locals init (valuetype [mscorlib]System.Decimal V_0)
+    IL_0000:  nop
+    IL_0001:  ldarg.1
+    IL_0002:  call       valuetype [mscorlib]System.Decimal [mscorlib]System.Decimal::op_Implicit(uint64)
+    IL_0007:  stloc.0
+    IL_0008:  br.s       IL_000a
+
+    IL_000a:  ldloc.0
+    IL_000b:  ret
+  } // end of method TypeAnalysisTests::ImplicitConversionToDecimal
+
+  .method public hidebysig instance bool 
+          EnumInConditionalOperator(bool b) cil managed
+  {
+    // Code size       29 (0x1d)
+    .maxstack  3
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldstr      ""
+    IL_0006:  ldstr      ""
+    IL_000b:  ldarg.1
+    IL_000c:  brtrue.s   IL_0011
+
+    IL_000e:  ldc.i4.5
+    IL_000f:  br.s       IL_0012
+
+    IL_0011:  ldc.i4.4
+    IL_0012:  nop
+    IL_0013:  call       bool [mscorlib]System.String::Equals(string,
+                                                              string,
+                                                              valuetype [mscorlib]System.StringComparison)
+    IL_0018:  stloc.0
+    IL_0019:  br.s       IL_001b
+
+    IL_001b:  ldloc.0
+    IL_001c:  ret
+  } // end of method TypeAnalysisTests::EnumInConditionalOperator
+
+  .method public hidebysig instance bool 
+          MethodCallOnEnumConstant() cil managed
+  {
+    // Code size       27 (0x1b)
+    .maxstack  2
+    .locals init (bool V_0)
+    IL_0000:  nop
+    IL_0001:  ldc.i4     0x7fff
+    IL_0006:  box        [mscorlib]System.AttributeTargets
+    IL_000b:  ldc.i4.1
+    IL_000c:  box        [mscorlib]System.AttributeTargets
+    IL_0011:  call       instance bool [mscorlib]System.Enum::HasFlag(class [mscorlib]System.Enum)
+    IL_0016:  stloc.0
+    IL_0017:  br.s       IL_0019
+
+    IL_0019:  ldloc.0
+    IL_001a:  ret
+  } // end of method TypeAnalysisTests::MethodCallOnEnumConstant
+
   .method public hidebysig specialname rtspecialname 
           instance void  .ctor() cil managed
   {
@@ -697,4 +950,3 @@
 // =============================================================
 
 // *********** DISASSEMBLY COMPLETE ***********************
-// WARNING: Created Win32 resource file ../../../TestCases/Pretty\TypeAnalysisTests.res

@@ -10,10 +10,11 @@ using System.Threading.Tasks;
 using System.Xml.Linq;
 
 using ICSharpCode.AvalonEdit.Highlighting;
+using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.Util;
 using ICSharpCode.ILSpy;
 using ICSharpCode.ILSpy.TextView;
 using ICSharpCode.ILSpy.TreeNodes;
-using Mono.Cecil;
 using Ricciolo.StylesExplorer.MarkupReflection;
 
 namespace ILSpy.BamlDecompiler
@@ -49,30 +50,32 @@ namespace ILSpy.BamlDecompiler
 		{
 			var asm = this.Ancestors().OfType<AssemblyTreeNode>().FirstOrDefault().LoadedAssembly;
 			Data.Position = 0;
-			XDocument xamlDocument = LoadIntoDocument(asm.GetAssemblyResolver(), asm.AssemblyDefinition, Data, cancellationToken);
+			XDocument xamlDocument = LoadIntoDocument(asm.GetPEFileOrNull(), asm.GetAssemblyResolver(), Data, cancellationToken);
 			output.Write(xamlDocument.ToString());
 			return true;
 		}
 
-		internal static XDocument LoadIntoDocument(IAssemblyResolver resolver, AssemblyDefinition asm, Stream stream, CancellationToken cancellationToken)
+		internal static XDocument LoadIntoDocument(PEFile module, IAssemblyResolver assemblyResolver,
+			Stream stream, CancellationToken cancellationToken)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			XDocument xamlDocument;
-			using (XmlBamlReader reader = new XmlBamlReader(stream, new CecilTypeResolver(resolver, asm))) {
+			using (XmlBamlReader reader = new XmlBamlReader(stream, new NRTypeResolver(module, assemblyResolver))) {
 				xamlDocument = XDocument.Load(reader);
-				ConvertConnectionIds(xamlDocument, asm, cancellationToken);
+				ConvertConnectionIds(xamlDocument, module, assemblyResolver, cancellationToken);
 				ConvertToEmptyElements(xamlDocument.Root);
 				MoveNamespacesToRoot(xamlDocument, reader.XmlnsDefinitions);
 				return xamlDocument;
 			}
 		}
 
-		static void ConvertConnectionIds(XDocument xamlDocument, AssemblyDefinition asm, CancellationToken cancellationToken)
+		static void ConvertConnectionIds(XDocument xamlDocument, PEFile asm, IAssemblyResolver assemblyResolver,
+			CancellationToken cancellationToken)
 		{
 			var attr = xamlDocument.Root.Attribute(XName.Get("Class", XmlBamlReader.XWPFNamespace));
 			if (attr != null) {
 				string fullTypeName = attr.Value;
-				var mappings = new ConnectMethodDecompiler(asm).DecompileEventMappings(fullTypeName, cancellationToken);
+				var mappings = new ConnectMethodDecompiler().DecompileEventMappings(asm, assemblyResolver, fullTypeName, cancellationToken);
 				RemoveConnectionIds(xamlDocument.Root, mappings);
 			}
 		}
@@ -135,7 +138,7 @@ namespace ILSpy.BamlDecompiler
 			}
 		}
 		
-		static void RemoveConnectionIds(XElement element, Dictionary<long, EventRegistration[]> eventMappings)
+		static void RemoveConnectionIds(XElement element, List<(LongSet key, EventRegistration[] value)> eventMappings)
 		{
 			foreach (var child in element.Elements())
 				RemoveConnectionIds(child, eventMappings);
@@ -143,10 +146,9 @@ namespace ILSpy.BamlDecompiler
 			var removableAttrs = new List<XAttribute>();
 			var addableAttrs = new List<XAttribute>();
 			foreach (var attr in element.Attributes(XName.Get("ConnectionId", XmlBamlReader.XWPFNamespace))) {
-				int id;
-				if (int.TryParse(attr.Value, out id) && eventMappings.ContainsKey(id)) {
-					var map = eventMappings[id];
-					foreach (var entry in map) {
+				int id, index;
+				if (int.TryParse(attr.Value, out id) && (index = eventMappings.FindIndex(item => item.key.Contains(id))) > -1) {
+					foreach (var entry in eventMappings[index].value) {
 						string xmlns = ""; // TODO : implement xmlns resolver!
 						addableAttrs.Add(new XAttribute(xmlns + entry.EventName, entry.MethodName));
 					}

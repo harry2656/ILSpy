@@ -51,6 +51,14 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			await default(YieldAwaitable);
 		}
 
+		public async void AwaitDefaultHopToThreadPool()
+		{
+			// unlike YieldAwaitable which implements ICriticalNotifyCompletion,
+			// the HopToThreadPoolAwaitable struct only implements
+			// INotifyCompletion, so this results in different codegen
+			await default(HopToThreadPoolAwaitable);
+		}
+
 		public async Task SimpleVoidTaskMethod()
 		{
 			Console.WriteLine("Before");
@@ -74,7 +82,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public async void TwoAwaitsWithDifferentAwaiterTypes()
 		{
 			Console.WriteLine("Before");
-			if (await this.SimpleBoolTaskMethod()) {
+			if (await SimpleBoolTaskMethod()) {
 				await Task.Delay(TimeSpan.FromSeconds(1.0));
 			}
 			Console.WriteLine("After");
@@ -82,9 +90,63 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public async void AwaitInLoopCondition()
 		{
-			while (await this.SimpleBoolTaskMethod()) {
+			while (await SimpleBoolTaskMethod()) {
 				Console.WriteLine("Body");
 			}
+		}
+
+#if CS60
+		public async Task AwaitInCatch(bool b, Task<int> task1, Task<int> task2)
+		{
+			try {
+				Console.WriteLine("Start try");
+				await task1;
+				Console.WriteLine("End try");
+			} catch (Exception) {
+				if (!b) {
+					await task2;
+				} else {
+					Console.WriteLine("No await");
+				}
+			}
+		}
+
+		public async Task AwaitInFinally(bool b, Task<int> task1, Task<int> task2)
+		{
+			try {
+				Console.WriteLine("Start try");
+				await task1;
+				Console.WriteLine("End try");
+			} finally {
+				if (!b) {
+					await task2;
+				} else {
+					Console.WriteLine("No await");
+				}
+			}
+		}
+#endif
+	}
+
+	public struct HopToThreadPoolAwaitable : INotifyCompletion
+	{
+		public bool IsCompleted {
+			get;
+			set;
+		}
+
+		public HopToThreadPoolAwaitable GetAwaiter()
+		{
+			return this;
+		}
+
+		public void OnCompleted(Action continuation)
+		{
+			Task.Run(continuation);
+		}
+
+		public void GetResult()
+		{
 		}
 	}
 }

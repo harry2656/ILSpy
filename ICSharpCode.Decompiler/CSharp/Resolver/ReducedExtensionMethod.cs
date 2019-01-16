@@ -45,6 +45,14 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 			this.baseMethod = baseMethod;
 		}
 
+		public bool Equals(IMember obj, TypeVisitor typeNormalization)
+		{
+			var other = obj as ReducedExtensionMethod;
+			if (other == null)
+				return false;
+			return baseMethod.Equals(other.baseMethod, typeNormalization);
+		}
+
 		public override bool Equals(object obj)
 		{
 			var other = obj as ReducedExtensionMethod;
@@ -66,65 +74,21 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		}
 
 		#region IMember implementation
-
-		[Serializable]
-		public sealed class ReducedExtensionMethodMemberReference : IMemberReference
-		{
-			readonly IMethod baseMethod;
-
-			public ReducedExtensionMethodMemberReference (IMethod baseMethod)
-			{
-				this.baseMethod = baseMethod;
-			}
-
-			public IMember Resolve(ITypeResolveContext context)
-			{
-				return new ReducedExtensionMethod ((IMethod)baseMethod.ToReference ().Resolve (context));
-			}
-			
-			ISymbol ISymbolReference.Resolve(ITypeResolveContext context)
-			{
-				return Resolve(context);
-			}
-
-			public ITypeReference DeclaringTypeReference {
-				get {
-					return baseMethod.ToReference ().DeclaringTypeReference;
-				}
-			}
-		}
-		
-		public IMemberReference ToReference()
-		{
-			return new ReducedExtensionMethodMemberReference (baseMethod);
-		}
-		
-		ISymbolReference ISymbol.ToReference()
-		{
-			return ToReference();
-		}
-
 		public IMember MemberDefinition {
 			get {
 				return baseMethod.MemberDefinition;
 			}
 		}
-
-		public IUnresolvedMember UnresolvedMember {
-			get {
-				return baseMethod.UnresolvedMember;
-			}
-		}
-
+		
 		public IType ReturnType {
 			get {
 				return baseMethod.ReturnType;
 			}
 		}
 
-		public System.Collections.Generic.IList<IMember> ImplementedInterfaceMembers {
+		public IEnumerable<IMember> ExplicitlyImplementedInterfaceMembers {
 			get {
-				return baseMethod.ImplementedInterfaceMembers;
+				return baseMethod.ExplicitlyImplementedInterfaceMembers;
 			}
 		}
 
@@ -167,28 +131,12 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		{
 			return Specialize(substitution);
 		}
-		
-		public bool IsParameterized {
-			get  { return baseMethod.IsParameterized; }
-		}
 
 		#endregion
 
 		#region IMethod implementation
 
-		public System.Collections.Generic.IList<IUnresolvedMethod> Parts {
-			get {
-				return baseMethod.Parts;
-			}
-		}
-
-		public System.Collections.Generic.IList<IAttribute> ReturnTypeAttributes {
-			get {
-				return baseMethod.ReturnTypeAttributes;
-			}
-		}
-
-		public System.Collections.Generic.IList<ITypeParameter> TypeParameters {
+		public IReadOnlyList<ITypeParameter> TypeParameters {
 			get {
 				return baseMethod.TypeParameters;
 			}
@@ -217,19 +165,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 				return baseMethod.IsOperator;
 			}
 		}
-
-		public bool IsPartial {
-			get {
-				return baseMethod.IsPartial;
-			}
-		}
-
-		public bool IsAsync {
-			get {
-				return baseMethod.IsAsync;
-			}
-		}
-
+		
 		public bool HasBody {
 			get {
 				return baseMethod.HasBody;
@@ -254,7 +190,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 			}
 		}
 
-		public IList<IType> TypeArguments {
+		public IReadOnlyList<IType> TypeArguments {
 			get {
 				return baseMethod.TypeArguments;
 			}
@@ -263,7 +199,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 
 		#region IParameterizedMember implementation
 		List<IParameter> parameters;
-		public System.Collections.Generic.IList<IParameter> Parameters {
+		public IReadOnlyList<IParameter> Parameters {
 			get {
 				if (parameters == null)
 					parameters = new List<IParameter> (baseMethod.Parameters.Skip (1));
@@ -275,24 +211,14 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 
 		#region IEntity implementation
 
+		public System.Reflection.Metadata.EntityHandle MetadataToken => baseMethod.MetadataToken;
+
 		public SymbolKind SymbolKind {
 			get {
 				return baseMethod.SymbolKind;
 			}
 		}
-
-		public DomRegion Region {
-			get {
-				return baseMethod.Region;
-			}
-		}
-
-		public DomRegion BodyRegion {
-			get {
-				return baseMethod.BodyRegion;
-			}
-		}
-
+		
 		public ITypeDefinition DeclaringTypeDefinition {
 			get {
 				return baseMethod.DeclaringTypeDefinition;
@@ -305,17 +231,14 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 			}
 		}
 
-		public IAssembly ParentAssembly {
+		public IModule ParentModule {
 			get {
-				return baseMethod.ParentAssembly;
+				return baseMethod.ParentModule;
 			}
 		}
 
-		public System.Collections.Generic.IList<IAttribute> Attributes {
-			get {
-				return baseMethod.Attributes;
-			}
-		}
+		IEnumerable<IAttribute> IEntity.GetAttributes() => baseMethod.GetAttributes();
+		IEnumerable<IAttribute> IMethod.GetReturnTypeAttributes() => baseMethod.GetReturnTypeAttributes();
 
 		public bool IsStatic {
 			get {
@@ -334,19 +257,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 				return baseMethod.IsSealed;
 			}
 		}
-
-		public bool IsShadowing {
-			get {
-				return baseMethod.IsShadowing;
-			}
-		}
-
-		public bool IsSynthetic {
-			get {
-				return baseMethod.IsSynthetic;
-			}
-		}
-
+		
 		#endregion
 
 		#region IHasAccessibility implementation
@@ -356,43 +267,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 				return baseMethod.Accessibility;
 			}
 		}
-
-		public bool IsPrivate {
-			get {
-				return baseMethod.IsPrivate;
-			}
-		}
-
-		public bool IsPublic {
-			get {
-				return baseMethod.IsPublic;
-			}
-		}
-
-		public bool IsProtected {
-			get {
-				return baseMethod.IsProtected;
-			}
-		}
-
-		public bool IsInternal {
-			get {
-				return baseMethod.IsInternal;
-			}
-		}
-
-		public bool IsProtectedOrInternal {
-			get {
-				return baseMethod.IsProtectedOrInternal;
-			}
-		}
-
-		public bool IsProtectedAndInternal {
-			get {
-				return baseMethod.IsProtectedAndInternal;
-			}
-		}
-
+		
 		#endregion
 
 		#region INamedElement implementation

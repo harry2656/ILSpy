@@ -18,10 +18,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.Threading;
 using ICSharpCode.Decompiler.IL.Transforms;
-using Mono.Cecil;
-using ICSharpCode.Decompiler.Disassembler;
 using System.Linq;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
@@ -31,7 +28,9 @@ namespace ICSharpCode.Decompiler.IL
 {
 	partial class ILFunction
 	{
-		public readonly MethodDefinition Method;
+		public readonly IMethod Method;
+		public readonly GenericContext GenericContext;
+		public readonly int CodeSize;
 		public readonly ILVariableCollection Variables;
 
 		/// <summary>
@@ -54,7 +53,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// Gets whether this function is async.
 		/// This flag gets set by the AsyncAwaitDecompiler.
 		/// </summary>
-		public bool IsAsync { get => AsyncReturnType != null; }
+		public bool IsAsync => AsyncReturnType != null;
 
 		/// <summary>
 		/// Return element type -- if the async method returns Task{T}, this field stores T.
@@ -62,10 +61,35 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		public IType AsyncReturnType;
 
-		public ILFunction(MethodDefinition method, ILInstruction body) : base(OpCode.ILFunction)
+		/// <summary>
+		/// If this is an expression tree or delegate, returns the expression tree type Expression{T} or T.
+		/// T is the delegate type that matches the signature of this method.
+		/// </summary>
+		public IType DelegateType;
+
+		public bool IsExpressionTree => DelegateType != null && DelegateType.FullName == "System.Linq.Expressions.Expression" && DelegateType.TypeParameterCount == 1;
+
+		public readonly IType ReturnType;
+
+		public readonly IReadOnlyList<IParameter> Parameters;
+
+		public ILFunction(IMethod method, int codeSize, GenericContext genericContext, ILInstruction body) : base(OpCode.ILFunction)
 		{
-			this.Body = body;
 			this.Method = method;
+			this.CodeSize = codeSize;
+			this.GenericContext = genericContext;
+			this.Body = body;
+			this.ReturnType = Method?.ReturnType;
+			this.Parameters = Method?.Parameters;
+			this.Variables = new ILVariableCollection(this);
+		}
+
+		public ILFunction(IType returnType, IReadOnlyList<IParameter> parameters, GenericContext genericContext, ILInstruction body) : base(OpCode.ILFunction)
+		{
+			this.GenericContext = genericContext;
+			this.Body = body;
+			this.ReturnType = returnType;
+			this.Parameters = parameters;
 			this.Variables = new ILVariableCollection(this);
 		}
 
@@ -80,15 +104,24 @@ namespace ICSharpCode.Decompiler.IL
 
 		void CloneVariables()
 		{
-			throw new NotImplementedException();
+			throw new NotSupportedException("ILFunction.CloneVariables is currently not supported!");
 		}
 
 		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
 		{
+			ILRange.WriteTo(output, options);
 			output.Write(OpCode);
 			if (Method != null) {
 				output.Write(' ');
 				Method.WriteTo(output);
+			}
+			if (IsExpressionTree) {
+				output.Write(".ET");
+			}
+			if (DelegateType != null) {
+				output.Write("[");
+				DelegateType.WriteTo(output);
+				output.Write("]");
 			}
 			output.WriteLine(" {");
 			output.Indent();
@@ -113,12 +146,41 @@ namespace ICSharpCode.Decompiler.IL
 			}
 
 			body.WriteTo(output, options);
-			
 			output.WriteLine();
+
+			if (options.ShowILRanges) {
+				var unusedILRanges = FindUnusedILRanges();
+				if (!unusedILRanges.IsEmpty) {
+					output.Write("// Unused IL Ranges: ");
+					output.Write(string.Join(", ", unusedILRanges.Intervals.Select(
+						range => $"[{range.Start:x4}..{range.InclusiveEnd:x4}]")));
+					output.WriteLine();
+				}
+			}
+
 			output.Unindent();
 			output.WriteLine("}");
 		}
 		
+		LongSet FindUnusedILRanges()
+		{
+			var usedILRanges = new List<LongInterval>();
+			MarkUsedILRanges(body);
+			return new LongSet(new LongInterval(0, CodeSize)).ExceptWith(new LongSet(usedILRanges));
+
+			void MarkUsedILRanges(ILInstruction inst)
+			{
+				if (CSharp.SequencePointBuilder.HasUsableILRange(inst)) {
+					usedILRanges.Add(new LongInterval(inst.ILRange.Start, inst.ILRange.End));
+				}
+				if (!(inst is ILFunction)) {
+					foreach (var child in inst.Children) {
+						MarkUsedILRanges(child);
+					}
+				}
+			}
+		}
+
 		protected override InstructionFlags ComputeFlags()
 		{
 			// Creating a lambda may throw OutOfMemoryException
@@ -174,7 +236,7 @@ namespace ICSharpCode.Decompiler.IL
 						name = "I_";
 						break;
 					default:
-						throw new NotSupportedException();
+						throw new ArgumentOutOfRangeException(nameof(kind));
 				}
 				name += index;
 				variable.HasGeneratedName = true;
@@ -182,6 +244,25 @@ namespace ICSharpCode.Decompiler.IL
 			variable.Name = name;
 			Variables.Add(variable);
 			return variable;
+		}
+
+		/// <summary>
+		/// Recombine split variables by replacing all occurrences of variable2 with variable1.
+		/// </summary>
+		internal void RecombineVariables(ILVariable variable1, ILVariable variable2)
+		{
+			Debug.Assert(ILVariableEqualityComparer.Instance.Equals(variable1, variable2));
+			foreach (var ldloc in variable2.LoadInstructions.ToArray()) {
+				ldloc.Variable = variable1;
+			}
+			foreach (var store in variable2.StoreInstructions.ToArray()) {
+				store.Variable = variable1;
+			}
+			foreach (var ldloca in variable2.AddressInstructions.ToArray()) {
+				ldloca.Variable = variable1;
+			}
+			bool ok = Variables.Remove(variable2);
+			Debug.Assert(ok);
 		}
 	}
 }

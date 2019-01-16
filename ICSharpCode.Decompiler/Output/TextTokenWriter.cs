@@ -23,8 +23,9 @@ using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.IL;
+using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
-using Mono.Cecil;
+using SRM = System.Reflection.Metadata;
 
 namespace ICSharpCode.Decompiler
 {
@@ -40,6 +41,7 @@ namespace ICSharpCode.Decompiler
 		bool lastUsingDeclaration;
 		
 		public bool FoldBraces = false;
+		public bool ExpandMemberDefinitions = false;
 		
 		public TextTokenWriter(ITextOutput output, DecompilerSettings settings, IDecompilerTypeSystem typeSystem)
 		{
@@ -61,32 +63,34 @@ namespace ICSharpCode.Decompiler
 			}
 			
 			var definition = GetCurrentDefinition();
-			if (definition != null) {
-				MemberReference cecil = SymbolToCecil(definition);
-				if (cecil != null) {
-					output.WriteDefinition(identifier.Name, definition, false);
+			switch (definition) {
+				case IType t:
+					output.WriteReference(t, identifier.Name, true);
 					return;
-				}
+				case IMember m:
+					output.WriteReference(m, identifier.Name, true);
+					return;
 			}
 			
 			var member = GetCurrentMemberReference();
-			if (member != null) {
-				MemberReference cecil = SymbolToCecil(member);
-				if (cecil != null) {
-					output.WriteReference(identifier.Name, cecil);
+			switch (member) {
+				case IType t:
+					output.WriteReference(t, identifier.Name, false);
 					return;
-				}
+				case IMember m:
+					output.WriteReference(m, identifier.Name, false);
+					return;
 			}
 
 			var localDefinition = GetCurrentLocalDefinition();
 			if (localDefinition != null) {
-				output.WriteDefinition(identifier.Name, localDefinition);
+				output.WriteLocalReference(identifier.Name, localDefinition, isDefinition: true);
 				return;
 			}
 
 			var localRef = GetCurrentLocalReference();
 			if (localRef != null) {
-				output.WriteReference(identifier.Name, localRef, true);
+				output.WriteLocalReference(identifier.Name, localRef);
 				return;
 			}
 
@@ -98,17 +102,6 @@ namespace ICSharpCode.Decompiler
 			output.Write(identifier.Name);
 		}
 
-		MemberReference SymbolToCecil(ISymbol symbol)
-		{
-			if (symbol is IType type) {
-				return typeSystem.GetCecil(type.GetDefinition());
-			} else if (symbol is IMember member) {
-				return typeSystem.GetCecil(member);
-			} else {
-				return null;
-			}
-		}
-
 		ISymbol GetCurrentMemberReference()
 		{
 			AstNode node = nodeStack.Peek();
@@ -116,7 +109,7 @@ namespace ICSharpCode.Decompiler
 			if (symbol == null && node.Role == Roles.TargetExpression && node.Parent is InvocationExpression) {
 				symbol = node.Parent.GetSymbol();
 			}
-			if (symbol != null && node.Parent is ObjectCreateExpression) {
+			if (symbol != null && node.Role == Roles.Type && node.Parent is ObjectCreateExpression) {
 				symbol = node.Parent.GetSymbol();
 			}
 			if (node is IdentifierExpression && node.Role == Roles.TargetExpression && node.Parent is InvocationExpression && symbol is IMember member) {
@@ -199,11 +192,8 @@ namespace ICSharpCode.Decompiler
 			//To make reference for 'this' and 'base' keywords in the ClassName():this() expression
 			if (role == ConstructorInitializer.ThisKeywordRole || role == ConstructorInitializer.BaseKeywordRole) {
 				if (nodeStack.Peek() is ConstructorInitializer initializer && initializer.GetSymbol() is IMember member) {
-					var cecil = typeSystem.GetCecil(member);
-					if (cecil != null) {
-						output.WriteReference(keyword, cecil);
-						return;
-					}
+					output.WriteReference(member, keyword);
+					return;
 				}
 			}
 			output.Write(keyword);
@@ -213,15 +203,20 @@ namespace ICSharpCode.Decompiler
 		{
 			switch (token) {
 				case "{":
+					if (role != Roles.LBrace) {
+						output.Write("{");
+						break;
+					}
 					if (braceLevelWithinType >= 0 || nodeStack.Peek() is TypeDeclaration)
 						braceLevelWithinType++;
 					if (nodeStack.OfType<BlockStatement>().Count() <= 1 || FoldBraces) {
-						output.MarkFoldStart(defaultCollapsed: braceLevelWithinType == 1);
+						output.MarkFoldStart(defaultCollapsed: !ExpandMemberDefinitions && braceLevelWithinType == 1);
 					}
 					output.Write("{");
 					break;
 				case "}":
 					output.Write('}');
+					if (role != Roles.RBrace) break;
 					if (nodeStack.OfType<BlockStatement>().Count() <= 1 || FoldBraces)
 						output.MarkFoldEnd();
 					if (braceLevelWithinType >= 0)
@@ -229,11 +224,18 @@ namespace ICSharpCode.Decompiler
 					break;
 				default:
 					// Attach member reference to token only if there's no identifier in the current node.
-					var member = SymbolToCecil(GetCurrentMemberReference());
+					var member = GetCurrentMemberReference();
 					var node = nodeStack.Peek();
-					if (member != null && node.GetChildByRole(Roles.Identifier).IsNull)
-						output.WriteReference(token, member);
-					else
+					if (member != null && node.GetChildByRole(Roles.Identifier).IsNull) {
+						switch (member) {
+							case IType t:
+								output.WriteReference(t, token, false);
+								return;
+							case IMember m:
+								output.WriteReference(m, token, false);
+								return;
+						}
+					} else
 						output.Write(token);
 					break;
 			}
@@ -335,9 +337,22 @@ namespace ICSharpCode.Decompiler
 				case "char":
 				case "string":
 				case "object":
-					var typeSymbol = (nodeStack.Peek().GetSymbol() as IType)?.GetDefinition();
-					if (typeSymbol == null) goto default;
-					output.WriteReference(type, typeSystem.GetCecil(typeSymbol));
+					var node = nodeStack.Peek();
+					ISymbol symbol;
+					if (node.Role == Roles.Type && node.Parent is ObjectCreateExpression) {
+						symbol = node.Parent.GetSymbol();
+					} else {
+						symbol = nodeStack.Peek().GetSymbol();
+					}
+					if (symbol == null) goto default;
+					switch (symbol) {
+						case IType t:
+							output.WriteReference(t, type, false);
+							return;
+						case IMember m:
+							output.WriteReference(m, type, false);
+							return;
+					}
 					break;
 				default:
 					output.Write(type);

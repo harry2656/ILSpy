@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+﻿// Copyright (c) 2014-2017 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,9 +16,12 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Linq.Expressions;
 using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.Decompiler.TypeSystem.Implementation;
 
 namespace ICSharpCode.Decompiler.IL.Transforms
 {
@@ -29,14 +32,17 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 	/// <remarks>
 	/// Should run after inlining so that the expression patterns can be detected.
 	/// </remarks>
-	public class ExpressionTransforms : ILVisitor, IBlockTransform, IStatementTransform
+	public class ExpressionTransforms : ILVisitor, IStatementTransform
 	{
-		internal ILTransformContext context;
+		internal StatementTransformContext context;
 
-		public void Run(Block block, BlockTransformContext context)
+		public static void RunOnSingleStatement(ILInstruction statement, ILTransformContext context)
 		{
-			this.context = context;
-			Default(block);
+			if (statement == null)
+				throw new ArgumentNullException(nameof(statement));
+			if (!(statement.Parent is Block parent))
+				throw new ArgumentException("ILInstruction must be a statement, i.e., direct child of a block.");
+			new ExpressionTransforms().Run(parent, statement.ChildIndex, new StatementTransformContext(new BlockTransformContext(context)));
 		}
 
 		public void Run(Block block, int pos, StatementTransformContext context)
@@ -60,18 +66,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			// we know those were already handled previously.
 		}
 
-		static bool IsInConditionSlot(ILInstruction inst)
-		{
-			var slot = inst.SlotInfo;
-			if (slot == IfInstruction.ConditionSlot)
-				return true;
-			if (slot == IfInstruction.TrueInstSlot || slot == IfInstruction.FalseInstSlot || slot == NullCoalescingInstruction.FallbackInstSlot)
-				return IsInConditionSlot(inst.Parent);
-			if (inst.Parent.MatchLogicNot(out _))
-				return true;
-			return false;
-		}
-
 		protected internal override void VisitComp(Comp inst)
 		{
 			// "logic.not(arg)" is sugar for "comp(arg != ldc.i4 0)"
@@ -79,7 +73,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				VisitLogicNot(inst, arg);
 				return;
 			} else if (inst.Kind == ComparisonKind.Inequality && inst.LiftingKind == ComparisonLiftingKind.None
-				&& inst.Right.MatchLdcI4(0) && (IsInConditionSlot(inst) || inst.Left is Comp)
+				&& inst.Right.MatchLdcI4(0) && (IfInstruction.IsInConditionSlot(inst) || inst.Left is Comp)
 			) {
 				// if (comp(x != 0)) ==> if (x)
 				// comp(comp(...) != 0) => comp(...)
@@ -117,16 +111,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			    && inst.Sign == Sign.Unsigned
 			    && (inst.Kind == ComparisonKind.GreaterThan || inst.Kind == ComparisonKind.LessThanOrEqual))
 			{
-				ILInstruction array;
-				if (inst.Left.MatchLdLen(StackType.I, out array)) {
-					// comp.unsigned(ldlen array > conv i4->i(ldc.i4 0))
-					// => comp(ldlen.i4 array > ldc.i4 0)
-					// This is a special case where the C# compiler doesn't generate conv.i4 after ldlen.
-					context.Step("comp(ldlen.i4 array > ldc.i4 0)", inst);
-					inst.InputType = StackType.I4;
-					inst.Left.ReplaceWith(new LdLen(StackType.I4, array) { ILRange = inst.Left.ILRange });
-					inst.Right = rightWithoutConv;
-				}
 				if (inst.Kind == ComparisonKind.GreaterThan) {
 					context.Step("comp.unsigned(left > ldc.i4 0) => comp(left != ldc.i4 0)", inst);
 					inst.Kind = ComparisonKind.Inequality;
@@ -137,6 +121,24 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					inst.Kind = ComparisonKind.Equality;
 					VisitComp(inst);
 					return;
+				}
+			} else if (rightWithoutConv.MatchLdcI4(0) && inst.Kind.IsEqualityOrInequality()) {
+				if (inst.Left.MatchLdLen(StackType.I, out ILInstruction array)) {
+					// comp.unsigned(ldlen array == conv i4->i(ldc.i4 0))
+					// => comp(ldlen.i4 array == ldc.i4 0)
+					// This is a special case where the C# compiler doesn't generate conv.i4 after ldlen.
+					context.Step("comp(ldlen.i4 array == ldc.i4 0)", inst);
+					inst.InputType = StackType.I4;
+					inst.Left.ReplaceWith(new LdLen(StackType.I4, array) { ILRange = inst.Left.ILRange });
+					inst.Right = rightWithoutConv;
+				} else if (inst.Left is Conv conv && conv.TargetType == PrimitiveType.I && conv.Argument.ResultType == StackType.O) {
+					// C++/CLI sometimes uses this weird comparison with null:
+					context.Step("comp(conv o->i (ldloc obj) == conv i4->i <sign extend>(ldc.i4 0))", inst);
+					// -> comp(ldloc obj == ldnull)
+					inst.InputType = StackType.O;
+					inst.Left = conv.Argument;
+					inst.Right = new LdNull { ILRange = inst.Right.ILRange };
+					inst.Right.AddILRange(rightWithoutConv.ILRange);
 				}
 			}
 
@@ -155,10 +157,23 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		protected internal override void VisitConv(Conv inst)
 		{
 			inst.Argument.AcceptVisitor(this);
-			if (inst.Argument.MatchLdLen(StackType.I, out ILInstruction array) && inst.TargetType.IsIntegerType() && !inst.CheckForOverflow) {
+			if (inst.Argument.MatchLdLen(StackType.I, out ILInstruction array) && inst.TargetType.IsIntegerType()
+				&& (!inst.CheckForOverflow || context.Settings.AssumeArrayLengthFitsIntoInt32))
+			{
 				context.Step("conv.i4(ldlen array) => ldlen.i4(array)", inst);
 				inst.AddILRange(inst.Argument.ILRange);
 				inst.ReplaceWith(new LdLen(inst.TargetType.GetStackType(), array) { ILRange = inst.ILRange });
+			}
+		}
+
+		protected internal override void VisitBox(Box inst)
+		{
+			inst.Argument.AcceptVisitor(this);
+			if (inst.Type.IsReferenceType == true && inst.Argument.ResultType == inst.ResultType) {
+				// For reference types, box is a no-op.
+				context.Step("box ref-type(arg) => arg", inst);
+				inst.Argument.AddILRange(inst.ILRange);
+				inst.ReplaceWith(inst.Argument);
 			}
 		}
 
@@ -191,7 +206,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		{
 			ILInstruction lhs, rhs;
 			if (arg is Comp comp) {
-				if ((comp.InputType != StackType.F && !comp.IsLifted) || comp.Kind.IsEqualityOrInequality()) {
+				if ((!comp.InputType.IsFloatType() && !comp.IsLifted) || comp.Kind.IsEqualityOrInequality()) {
 					context.Step("push negation into comparison", inst);
 					comp.Kind = comp.Kind.Negate();
 					comp.AddILRange(inst.ILRange);
@@ -229,34 +244,110 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		
 		protected internal override void VisitCall(Call inst)
 		{
-			if (inst.Method.IsConstructor && !inst.Method.IsStatic && inst.Method.DeclaringType.Kind == TypeKind.Struct) {
-				Debug.Assert(inst.Arguments.Count == inst.Method.Parameters.Count + 1);
-				context.Step("Transform call to struct constructor", inst);
-				// call(ref, ...)
-				// => stobj(ref, newobj(...))
-				var newObj = new NewObj(inst.Method);
-				newObj.ILRange = inst.ILRange;
-				newObj.Arguments.AddRange(inst.Arguments.Skip(1));
-				var expr = new StObj(inst.Arguments[0], newObj, inst.Method.DeclaringType);
-				inst.ReplaceWith(expr);
-				// Both the StObj and the NewObj may trigger further rules, so continue visiting the replacement:
-				VisitStObj(expr);
+			var expr = EarlyExpressionTransforms.HandleCall(inst, context);
+			if (expr != null) {
+				// The resulting expression may trigger further rules, so continue visiting the replacement:
+				expr.AcceptVisitor(this);
 			} else {
 				base.VisitCall(inst);
+				TransformAssignment.HandleCompoundAssign(inst, context);
 			}
 		}
-		
+
+		protected internal override void VisitCallVirt(CallVirt inst)
+		{
+			base.VisitCallVirt(inst);
+			TransformAssignment.HandleCompoundAssign(inst, context);
+		}
+
 		protected internal override void VisitNewObj(NewObj inst)
 		{
-			LdcDecimal decimalConstant;
-			if (TransformDecimalCtorToConstant(inst, out decimalConstant)) {
+			if (TransformDecimalCtorToConstant(inst, out LdcDecimal decimalConstant)) {
 				context.Step("TransformDecimalCtorToConstant", inst);
 				inst.ReplaceWith(decimalConstant);
 				return;
 			}
+			if (TransformSpanTCtorContainingStackAlloc(inst, out ILInstruction locallocSpan)) {
+				inst.ReplaceWith(locallocSpan);
+				Block block = null;
+				ILInstruction stmt = locallocSpan;
+				while (stmt.Parent != null) {
+					if (stmt.Parent is Block b) {
+						block = b;
+						break;
+					}
+					stmt = stmt.Parent;
+				}
+				//ILInlining.InlineIfPossible(block, stmt.ChildIndex - 1, context);
+				return;
+			}
 			base.VisitNewObj(inst);
 		}
-		
+
+		/// <summary>
+		/// newobj Span..ctor(localloc(conv i4->u &lt;zero extend&gt;(ldc.i4 sizeInBytes)), numberOfElementsExpr)
+		/// =>
+		/// localloc.span T(numberOfElementsExpr)
+		/// 
+		/// -or-
+		/// 
+		/// newobj Span..ctor(Block IL_0000 (StackAllocInitializer) {
+		///		stloc I_0(localloc(conv i4->u&lt;zero extend>(ldc.i4 sizeInBytes)))
+		///		...
+		///		final: ldloc I_0
+		///	}, numberOfElementsExpr)
+		/// =>
+		/// Block IL_0000 (StackAllocInitializer) {
+		///		stloc I_0(localloc.span T(numberOfElementsExpr))
+		///		...
+		///		final: ldloc I_0
+		/// }
+		/// </summary>
+		bool TransformSpanTCtorContainingStackAlloc(NewObj newObj, out ILInstruction locallocSpan)
+		{
+			locallocSpan = null;
+			IType type = newObj.Method.DeclaringType;
+			if (!type.IsKnownType(KnownTypeCode.SpanOfT) && !type.IsKnownType(KnownTypeCode.ReadOnlySpanOfT))
+				return false;
+			if (newObj.Arguments.Count != 2 || type.TypeArguments.Count != 1)
+				return false;
+			IType elementType = type.TypeArguments[0];
+			if (newObj.Arguments[0].MatchLocAlloc(out var sizeInBytes) && MatchesElementCount(sizeInBytes, elementType, newObj.Arguments[1])) {
+				locallocSpan = new LocAllocSpan(newObj.Arguments[1], type);
+				return true;
+			}
+			if (newObj.Arguments[0] is Block initializer && initializer.Kind == BlockKind.StackAllocInitializer) {
+				if (!initializer.Instructions[0].MatchStLoc(out var initializerVariable, out var value))
+					return false;
+				if (!(value.MatchLocAlloc(out sizeInBytes) && MatchesElementCount(sizeInBytes, elementType, newObj.Arguments[1])))
+					return false;
+				var newVariable = initializerVariable.Function.RegisterVariable(VariableKind.InitializerTarget, type);
+				foreach (var load in initializerVariable.LoadInstructions.ToArray()) {
+					ILInstruction newInst = new LdLoc(newVariable);
+					newInst.AddILRange(load.ILRange);
+					if (load.Parent != initializer)
+						newInst = new Conv(newInst, PrimitiveType.I, false, Sign.None);
+					load.ReplaceWith(newInst);
+				}
+				foreach (var store in initializerVariable.StoreInstructions.ToArray()) {
+					store.Variable = newVariable;
+				}
+				value.ReplaceWith(new LocAllocSpan(newObj.Arguments[1], type));
+				locallocSpan = initializer;
+				return true;
+			}
+			return false;
+		}
+
+		bool MatchesElementCount(ILInstruction sizeInBytesInstr, IType elementType, ILInstruction elementCountInstr2)
+		{
+			var pointerType = new PointerType(elementType);
+			var elementCountInstr = PointerArithmeticOffset.Detect(sizeInBytesInstr, pointerType, checkForOverflow: true, unwrapZeroExtension: true);
+			if (!elementCountInstr.Match(elementCountInstr2).Success)
+				return false;
+			return true;
+		}
+
 		bool TransformDecimalCtorToConstant(NewObj inst, out LdcDecimal result)
 		{
 			IType t = inst.Method.DeclaringType;
@@ -282,40 +373,23 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			return false;
 		}
-		
-		// This transform is required because ILInlining only works with stloc/ldloc
+
+		protected internal override void VisitLdObj(LdObj inst)
+		{
+			base.VisitLdObj(inst);
+			EarlyExpressionTransforms.LdObjToLdLoc(inst, context);
+		}
+
 		protected internal override void VisitStObj(StObj inst)
 		{
 			base.VisitStObj(inst);
-			if (StObjToStLoc(inst, context)) {
+			if (EarlyExpressionTransforms.StObjToStLoc(inst, context)) {
+				context.RequestRerun();
 				return;
 			}
-
-			if (inst.Value is BinaryNumericInstruction binary
-				&& !binary.IsLifted
-				&& binary.Left.MatchLdObj(out ILInstruction target, out IType t)
-				&& inst.Target.Match(target).Success) 
-			{
-				context.Step("compound assignment", inst);
-				// stobj(target, binary.op(ldobj(target), ...))
-				// => compound.op(target, ...)
-				inst.ReplaceWith(new CompoundAssignmentInstruction(binary.Operator, binary.Left, binary.Right, t, binary.CheckForOverflow, binary.Sign, CompoundAssignmentType.EvaluatesToNewValue));
-			}
+			TransformAssignment.HandleCompoundAssign(inst, context);
 		}
 
-		internal static bool StObjToStLoc(StObj inst, ILTransformContext context)
-		{
-			if (inst.Target.MatchLdLoca(out ILVariable v)
-				&& TypeUtils.IsCompatibleTypeForMemoryAccess(new ByReferenceType(v.Type), inst.Type)
-				&& inst.UnalignedPrefix == 0
-				&& !inst.IsVolatile) {
-				context.Step($"stobj(ldloca {v.Name}, ...) => stloc {v.Name}(...)", inst);
-				inst.ReplaceWith(new StLoc(v, inst.Value));
-				return true;
-			}
-			return false;
-		}
-		
 		protected internal override void VisitIfInstruction(IfInstruction inst)
 		{
 			inst.TrueInst.AcceptVisitor(this);
@@ -341,6 +415,127 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 			if (new NullableLiftingTransform(context).Run(inst))
 				return;
+
+			if (TransformDynamicAddAssignOrRemoveAssign(inst))
+				return;
+			if (inst.MatchIfInstructionPositiveCondition(out var condition, out var trueInst, out var falseInst)) {
+				ILInstruction transformed = UserDefinedLogicTransform.Transform(condition, trueInst, falseInst);
+				if (transformed == null) {
+					transformed = UserDefinedLogicTransform.TransformDynamic(condition, trueInst, falseInst);
+				}
+				if (transformed != null) {
+					context.Step("User-defined short-circuiting logic operator (roslyn pattern)", condition);
+					transformed.AddILRange(inst.ILRange);
+					inst.ReplaceWith(transformed);
+					return;
+				}
+			}
+		}
+
+		/// <summary>
+		/// op is either add or remove/subtract:
+		/// if (dynamic.isevent (target)) {
+		///     dynamic.invokemember.invokespecial.discard op_Name(target, value)
+		/// } else {
+		///     dynamic.compound.op (dynamic.getmember Name(target), value)
+		/// }
+		/// =>
+		/// dynamic.compound.op (dynamic.getmember Name(target), value)
+		/// </summary>
+		bool TransformDynamicAddAssignOrRemoveAssign(IfInstruction inst)
+		{
+			if (!inst.MatchIfInstructionPositiveCondition(out var condition, out var trueInst, out var falseInst))
+				return false;
+			if (!(condition is DynamicIsEventInstruction isEvent))
+				return false;
+			trueInst = Block.Unwrap(trueInst);
+			falseInst = Block.Unwrap(falseInst);
+			if (!(falseInst is DynamicCompoundAssign dynamicCompoundAssign))
+				return false;
+			if (!(dynamicCompoundAssign.Target is DynamicGetMemberInstruction getMember))
+				return false;
+			if (!isEvent.Argument.Match(getMember.Target).Success)
+				return false;
+			if (!SemanticHelper.IsPure(isEvent.Argument.Flags))
+				return false;
+			if (!(trueInst is DynamicInvokeMemberInstruction invokeMember))
+				return false;
+			if (!(invokeMember.BinderFlags.HasFlag(CSharpBinderFlags.InvokeSpecialName) && invokeMember.BinderFlags.HasFlag(CSharpBinderFlags.ResultDiscarded)))
+				return false;
+			switch (dynamicCompoundAssign.Operation) {
+				case ExpressionType.AddAssign:
+					if (invokeMember.Name != "add_" + getMember.Name)
+						return false;
+					break;
+				case ExpressionType.SubtractAssign:
+					if (invokeMember.Name != "remove_" + getMember.Name)
+						return false;
+					break;
+				default:
+					return false;
+			}
+			if (!dynamicCompoundAssign.Value.Match(invokeMember.Arguments[1]).Success)
+				return false;
+			if (!invokeMember.Arguments[0].Match(getMember.Target).Success)
+				return false;
+			context.Step("+= / -= dynamic.isevent pattern -> dynamic.compound.op", inst);
+			inst.ReplaceWith(dynamicCompoundAssign);
+			return true;
+		}
+
+		/// <summary>
+		/// dynamic.setmember.compound Name(target, dynamic.binary.operator op(dynamic.getmember Name(target), value))
+		/// =>
+		/// dynamic.compound.op (dynamic.getmember Name(target), value)
+		/// </summary>
+		protected internal override void VisitDynamicSetMemberInstruction(DynamicSetMemberInstruction inst)
+		{
+			base.VisitDynamicSetMemberInstruction(inst);
+
+			if (!inst.BinderFlags.HasFlag(CSharpBinderFlags.ValueFromCompoundAssignment))
+				return;
+			if (!(inst.Value is DynamicBinaryOperatorInstruction binaryOp))
+				return;
+			if (!(binaryOp.Left is DynamicGetMemberInstruction dynamicGetMember))
+				return;
+			if (!dynamicGetMember.Target.Match(inst.Target).Success)
+				return;
+			if (!SemanticHelper.IsPure(dynamicGetMember.Target.Flags))
+				return;
+			if (inst.Name != dynamicGetMember.Name || !DynamicCompoundAssign.IsExpressionTypeSupported(binaryOp.Operation))
+				return;
+			context.Step("dynamic.setmember.compound -> dynamic.compound.op", inst);
+			inst.ReplaceWith(new DynamicCompoundAssign(binaryOp.Operation, binaryOp.BinderFlags, binaryOp.Left, binaryOp.LeftArgumentInfo, binaryOp.Right, binaryOp.RightArgumentInfo));
+		}
+
+		/// <summary>
+		/// dynamic.setindex.compound(target, index, dynamic.binary.operator op(dynamic.getindex(target, index), value))
+		/// =>
+		/// dynamic.compound.op (dynamic.getindex(target, index), value)
+		/// </summary>
+		protected internal override void VisitDynamicSetIndexInstruction(DynamicSetIndexInstruction inst)
+		{
+			base.VisitDynamicSetIndexInstruction(inst);
+
+			if (!inst.BinderFlags.HasFlag(CSharpBinderFlags.ValueFromCompoundAssignment))
+				return;
+			if (!(inst.Arguments.LastOrDefault() is DynamicBinaryOperatorInstruction binaryOp))
+				return;
+			if (!(binaryOp.Left is DynamicGetIndexInstruction dynamicGetIndex))
+				return;
+			if (inst.Arguments.Count != dynamicGetIndex.Arguments.Count + 1)
+				return;
+			// Ensure that same arguments are passed to dynamicGetIndex and inst:
+			for (int j = 0; j < dynamicGetIndex.Arguments.Count; j++) {
+				if (!SemanticHelper.IsPure(dynamicGetIndex.Arguments[j].Flags))
+					return;
+				if (!dynamicGetIndex.Arguments[j].Match(dynamicGetIndex.Arguments[j]).Success)
+					return;
+			}
+			if (!DynamicCompoundAssign.IsExpressionTypeSupported(binaryOp.Operation))
+				return;
+			context.Step("dynamic.setindex.compound -> dynamic.compound.op", inst);
+			inst.ReplaceWith(new DynamicCompoundAssign(binaryOp.Operation, binaryOp.BinderFlags, binaryOp.Left, binaryOp.LeftArgumentInfo, binaryOp.Right, binaryOp.RightArgumentInfo));
 		}
 
 		IfInstruction HandleConditionalOperator(IfInstruction inst)
@@ -359,7 +554,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				var newIf = new IfInstruction(Comp.LogicNot(inst.Condition), value2, value1);
 				newIf.ILRange = inst.ILRange;
 				inst.ReplaceWith(new StLoc(v, newIf));
-				(context as StatementTransformContext)?.RequestRerun();  // trigger potential inlining of the newly created StLoc
+				context.RequestRerun();  // trigger potential inlining of the newly created StLoc
 				return newIf;
 			}
 			return inst;
@@ -379,9 +574,23 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						inst.Right = lhs;
 					}
 					break;
+				case BinaryNumericOperator.BitAnd:
+					if (inst.Left.InferType(context.TypeSystem).IsKnownType(KnownTypeCode.Boolean)
+						&& inst.Right.InferType(context.TypeSystem).IsKnownType(KnownTypeCode.Boolean))
+					{
+						if (new NullableLiftingTransform(context).Run(inst)) {
+							// e.g. "(a.GetValueOrDefault() == b.GetValueOrDefault()) & (a.HasValue & b.HasValue)"
+						} else if (SemanticHelper.IsPure(inst.Right.Flags)) {
+							context.Step("Replace bit.and with logic.and", inst);
+							var expr = IfInstruction.LogicAnd(inst.Left, inst.Right);
+							inst.ReplaceWith(expr);
+							expr.AcceptVisitor(this);
+						}
+					}
+					break;
 			}
 		}
-
+		
 		protected internal override void VisitTryCatchHandler(TryCatchHandler inst)
 		{
 			base.VisitTryCatchHandler(inst);

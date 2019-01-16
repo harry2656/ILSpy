@@ -1,6 +1,4 @@
 
-//  Microsoft (R) .NET Framework IL Disassembler.  Version 4.0.30319.17929
-//  Copyright (c) Microsoft Corporation.  All rights reserved.
 
 
 
@@ -10,7 +8,7 @@
   .publickeytoken = (B7 7A 5C 56 19 34 E0 89 )                         // .z\V.4..
   .ver 4:0:0:0
 }
-.assembly b1jpssom
+.assembly InlineAssignmentTest.opt
 {
   .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilationRelaxationsAttribute::.ctor(int32) = ( 01 00 08 00 00 00 00 00 ) 
   .custom instance void [mscorlib]System.Runtime.CompilerServices.RuntimeCompatibilityAttribute::.ctor() = ( 01 00 01 00 54 02 16 57 72 61 70 4E 6F 6E 45 78   // ....T..WrapNonEx
@@ -20,15 +18,13 @@
   .hash algorithm 0x00008004
   .ver 0:0:0:0
 }
-.module b1jpssom.dll
-// MVID: {7C6502B0-8536-4BED-9395-765EB2F77653}
+.module InlineAssignmentTest.opt.dll
 .custom instance void [mscorlib]System.Security.UnverifiableCodeAttribute::.ctor() = ( 01 00 00 00 ) 
 .imagebase 0x10000000
 .file alignment 0x00000200
 .stackreserve 0x00100000
 .subsystem 0x0003       // WINDOWS_CUI
 .corflags 0x00000001    //  ILONLY
-// Image base: 0x02B00000
 
 
 // =============== CLASS MEMBERS DECLARATION ===================
@@ -39,26 +35,83 @@
   .field private int32 field1
   .field private static class ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest field2
   .field private int32[] field3
+  .field private int16 field4
+  .field private int32 '<InstanceProperty>k__BackingField'
+  .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilerGeneratedAttribute::.ctor() = ( 01 00 00 00 ) 
+  .field private static int32 '<StaticProperty>k__BackingField'
+  .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilerGeneratedAttribute::.ctor() = ( 01 00 00 00 ) 
+  .method public hidebysig specialname instance int32 
+          get_InstanceProperty() cil managed
+  {
+    .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilerGeneratedAttribute::.ctor() = ( 01 00 00 00 ) 
+    // Code size       7 (0x7)
+    .maxstack  8
+    IL_0000:  ldarg.0
+    IL_0001:  ldfld      int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::'<InstanceProperty>k__BackingField'
+    IL_0006:  ret
+  } // end of method InlineAssignmentTest::get_InstanceProperty
+
+  .method public hidebysig specialname instance void 
+          set_InstanceProperty(int32 'value') cil managed
+  {
+    .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilerGeneratedAttribute::.ctor() = ( 01 00 00 00 ) 
+    // Code size       8 (0x8)
+    .maxstack  8
+    IL_0000:  ldarg.0
+    IL_0001:  ldarg.1
+    IL_0002:  stfld      int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::'<InstanceProperty>k__BackingField'
+    IL_0007:  ret
+  } // end of method InlineAssignmentTest::set_InstanceProperty
+
+  .method public hidebysig specialname static 
+          int32  get_StaticProperty() cil managed
+  {
+    .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilerGeneratedAttribute::.ctor() = ( 01 00 00 00 ) 
+    // Code size       6 (0x6)
+    .maxstack  8
+    IL_0000:  ldsfld     int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::'<StaticProperty>k__BackingField'
+    IL_0005:  ret
+  } // end of method InlineAssignmentTest::get_StaticProperty
+
+  .method public hidebysig specialname static 
+          void  set_StaticProperty(int32 'value') cil managed
+  {
+    .custom instance void [mscorlib]System.Runtime.CompilerServices.CompilerGeneratedAttribute::.ctor() = ( 01 00 00 00 ) 
+    // Code size       7 (0x7)
+    .maxstack  8
+    IL_0000:  ldarg.0
+    IL_0001:  stsfld     int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::'<StaticProperty>k__BackingField'
+    IL_0006:  ret
+  } // end of method InlineAssignmentTest::set_StaticProperty
+
   .method public hidebysig instance void 
           SimpleInlineWithLocals() cil managed
   {
-    // Code size       33 (0x21)
-    .maxstack  2
+    // Code size       55 (0x37)
+    .maxstack  3
     .locals init (int32 V_0,
              class ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest V_1)
-    IL_0000:  ldc.i4.5
-    IL_0001:  dup
-    IL_0002:  stloc.0
-    IL_0003:  call       void [mscorlib]System.Console::WriteLine(int32)
-    IL_0008:  ldloc.0
-    IL_0009:  call       void [mscorlib]System.Console::WriteLine(int32)
-    IL_000e:  newobj     instance void ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::.ctor()
-    IL_0013:  dup
-    IL_0014:  stloc.1
-    IL_0015:  call       void [mscorlib]System.Console::WriteLine(object)
-    IL_001a:  ldloc.1
-    IL_001b:  call       void [mscorlib]System.Console::WriteLine(object)
-    IL_0020:  ret
+    IL_0000:  ldarg.0
+    IL_0001:  call       instance string ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::GetFormat()
+    IL_0006:  ldarg.0
+    IL_0007:  call       instance int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::GetIndex()
+    IL_000c:  dup
+    IL_000d:  stloc.0
+    IL_000e:  box        [mscorlib]System.Int32
+    IL_0013:  call       void [mscorlib]System.Console::WriteLine(string,
+                                                                  object)
+    IL_0018:  ldloc.0
+    IL_0019:  call       void [mscorlib]System.Console::WriteLine(int32)
+    IL_001e:  ldarg.0
+    IL_001f:  call       instance string ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::GetFormat()
+    IL_0024:  newobj     instance void ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::.ctor()
+    IL_0029:  dup
+    IL_002a:  stloc.1
+    IL_002b:  call       void [mscorlib]System.Console::WriteLine(string,
+                                                                  object)
+    IL_0030:  ldloc.1
+    IL_0031:  call       void [mscorlib]System.Console::WriteLine(object)
+    IL_0036:  ret
   } // end of method InlineAssignmentTest::SimpleInlineWithLocals
 
   .method public hidebysig instance void 
@@ -84,9 +137,13 @@
   .method public hidebysig instance void 
           SimpleInlineWithFields2() cil managed
   {
-    // Code size       53 (0x35)
-    .maxstack  3
-    .locals init (int32 V_0)
+    // Code size       150 (0x96)
+    .maxstack  4
+    .locals init (int32 V_0,
+             int16 V_1,
+             int16 V_2,
+             int16 V_3,
+             int16 V_4)
     IL_0000:  ldarg.0
     IL_0001:  ldc.i4.5
     IL_0002:  dup
@@ -103,8 +160,81 @@
     IL_0025:  call       void [mscorlib]System.Console::WriteLine(object)
     IL_002a:  ldsfld     class ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::field2
     IL_002f:  call       void [mscorlib]System.Console::WriteLine(object)
-    IL_0034:  ret
+    IL_0034:  ldarg.0
+    IL_0035:  ldarg.0
+    IL_0036:  ldc.i4.6
+    IL_0037:  dup
+    IL_0038:  stloc.1
+    IL_0039:  stfld      int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::field4
+    IL_003e:  ldloc.1
+    IL_003f:  call       instance int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::UseShort(int16)
+    IL_0044:  pop
+    IL_0045:  ldarg.0
+    IL_0046:  ldarg.0
+    IL_0047:  ldc.i4     0xffffd8f0
+    IL_004c:  dup
+    IL_004d:  stloc.2
+    IL_004e:  stfld      int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::field4
+    IL_0053:  ldloc.2
+    IL_0054:  call       instance int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::UseShort(int16)
+    IL_0059:  pop
+    IL_005a:  ldarg.0
+    IL_005b:  ldarg.0
+    IL_005c:  ldarg.0
+    IL_005d:  ldfld      int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::field1
+    IL_0062:  conv.i2
+    IL_0063:  dup
+    IL_0064:  stloc.3
+    IL_0065:  stfld      int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::field4
+    IL_006a:  ldloc.3
+    IL_006b:  call       instance int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::UseShort(int16)
+    IL_0070:  pop
+    IL_0071:  ldarg.0
+    IL_0072:  ldarg.0
+    IL_0073:  ldarg.0
+    IL_0074:  ldc.i4.0
+    IL_0075:  call       instance int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::UseShort(int16)
+    IL_007a:  dup
+    IL_007b:  stloc.s    V_4
+    IL_007d:  stfld      int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::field4
+    IL_0082:  ldloc.s    V_4
+    IL_0084:  call       instance int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::UseShort(int16)
+    IL_0089:  pop
+    IL_008a:  ldarg.0
+    IL_008b:  ldfld      int16 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::field4
+    IL_0090:  call       void [mscorlib]System.Console::WriteLine(int32)
+    IL_0095:  ret
   } // end of method InlineAssignmentTest::SimpleInlineWithFields2
+
+  .method public hidebysig instance int16 
+          UseShort(int16 s) cil managed
+  {
+    // Code size       8 (0x8)
+    .maxstack  8
+    IL_0000:  ldarg.1
+    IL_0001:  call       void [mscorlib]System.Console::WriteLine(int32)
+    IL_0006:  ldarg.1
+    IL_0007:  ret
+  } // end of method InlineAssignmentTest::UseShort
+
+  .method public hidebysig instance void 
+          ReadLoop1(class [mscorlib]System.IO.TextReader r) cil managed
+  {
+    // Code size       19 (0x13)
+    .maxstack  2
+    .locals init (string V_0)
+    IL_0000:  br.s       IL_0008
+
+    IL_0002:  ldloc.0
+    IL_0003:  call       void [mscorlib]System.Console::WriteLine(string)
+    IL_0008:  ldarg.1
+    IL_0009:  callvirt   instance string [mscorlib]System.IO.TextReader::ReadLine()
+    IL_000e:  dup
+    IL_000f:  stloc.0
+    IL_0010:  brtrue.s   IL_0002
+
+    IL_0012:  ret
+  } // end of method InlineAssignmentTest::ReadLoop1
 
   .method public hidebysig instance void 
           AccessArray(int32[] a) cil managed
@@ -201,6 +331,15 @@
     IL_0005:  throw
   } // end of method InlineAssignmentTest::GetArray
 
+  .method public hidebysig instance string 
+          GetFormat() cil managed
+  {
+    // Code size       6 (0x6)
+    .maxstack  8
+    IL_0000:  ldstr      "{0}"
+    IL_0005:  ret
+  } // end of method InlineAssignmentTest::GetFormat
+
   .method public hidebysig instance int32 
           GetValue(int32 'value') cil managed
   {
@@ -231,6 +370,34 @@
     IL_001c:  ret
   } // end of method InlineAssignmentTest::ArrayUsageWithMethods
 
+  .method public hidebysig instance int32 
+          StaticPropertyTest() cil managed
+  {
+    // Code size       13 (0xd)
+    .maxstack  8
+    IL_0000:  ldarg.0
+    IL_0001:  call       instance int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::GetIndex()
+    IL_0006:  dup
+    IL_0007:  call       void ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::set_StaticProperty(int32)
+    IL_000c:  ret
+  } // end of method InlineAssignmentTest::StaticPropertyTest
+
+  .method public hidebysig instance int32 
+          InstancePropertyTest() cil managed
+  {
+    // Code size       16 (0x10)
+    .maxstack  3
+    .locals init (int32 V_0)
+    IL_0000:  ldarg.0
+    IL_0001:  ldarg.0
+    IL_0002:  call       instance int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::GetIndex()
+    IL_0007:  dup
+    IL_0008:  stloc.0
+    IL_0009:  call       instance void ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::set_InstanceProperty(int32)
+    IL_000e:  ldloc.0
+    IL_000f:  ret
+  } // end of method InlineAssignmentTest::InstancePropertyTest
+
   .method public hidebysig specialname rtspecialname 
           instance void  .ctor() cil managed
   {
@@ -241,10 +408,19 @@
     IL_0006:  ret
   } // end of method InlineAssignmentTest::.ctor
 
+  .property instance int32 InstanceProperty()
+  {
+    .get instance int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::get_InstanceProperty()
+    .set instance void ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::set_InstanceProperty(int32)
+  } // end of property InlineAssignmentTest::InstanceProperty
+  .property int32 StaticProperty()
+  {
+    .get int32 ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::get_StaticProperty()
+    .set void ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest::set_StaticProperty(int32)
+  } // end of property InlineAssignmentTest::StaticProperty
 } // end of class ICSharpCode.Decompiler.Tests.TestCases.Pretty.InlineAssignmentTest
 
 
 // =============================================================
 
 // *********** DISASSEMBLY COMPLETE ***********************
-// WARNING: Created Win32 resource file ../../Tests/TestCases/Pretty\InlineAssignmentTest.opt.res

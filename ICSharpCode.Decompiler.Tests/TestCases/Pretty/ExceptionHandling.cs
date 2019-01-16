@@ -17,20 +17,25 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+#if CS60
+using System.IO;
+#endif
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
 	public abstract class ExceptionHandling
 	{
 		public abstract bool B(int i);
+		public abstract Task<bool> T();
 		public abstract void M(int i);
 
 		public bool ConditionalReturnInThrow()
 		{
 			try {
-				if (this.B(0)) {
-					return this.B(1);
+				if (B(0)) {
+					return B(1);
 				}
 			} catch {
 			}
@@ -41,7 +46,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			try {
 				Console.WriteLine("Try");
-				return this.B(new Random().Next());
+				return B(new Random().Next());
 			} catch (Exception) {
 				Console.WriteLine("CatchException");
 			}
@@ -52,24 +57,57 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			try {
 				Console.WriteLine("Try");
-				return this.B(new Random().Next());
+				return B(new Random().Next());
 			} catch (Exception ex) {
 				Console.WriteLine("CatchException ex: " + ex.ToString());
 			}
 			return false;
 		}
 
-#if !LEGACY_CSC
+#if CS60
 		public bool SimpleTryCatchExceptionWithNameAndCondition()
 		{
 			try {
 				Console.WriteLine("Try");
-				return this.B(new Random().Next());
+				return B(new Random().Next());
 			} catch (Exception ex) when (ex.Message.Contains("test")) {
 				Console.WriteLine("CatchException ex: " + ex.ToString());
 			}
 			return false;
 		}
+
+		public bool SimpleTryCatchExceptionWithNameAndConditionWithOr()
+		{
+			try {
+				Console.WriteLine("Try");
+				return B(new Random().Next());
+			} catch (Exception ex) when (ex is ArgumentException || ex is IOException) {
+				Console.WriteLine("CatchException ex: " + ex.ToString());
+			}
+			return false;
+		}
+
+		public async Task<bool> SimpleAsyncTryCatchExceptionWithNameAndConditionWithOr()
+		{
+			try {
+				Console.WriteLine("Try");
+				return await T();
+			} catch (Exception ex) when (ex is ArgumentException || ex is IOException) {
+				Console.WriteLine("CatchException ex: " + ex.ToString());
+			}
+			return false;
+		}
+
+		public void CatchWhenWithConditionWithoutExceptionVar()
+		{
+			int num = 0;
+			try {
+				throw new Exception();
+			} catch (Exception) when (num == 0) {
+				Console.WriteLine("jo");
+			}
+		}
+
 #endif
 
 		public bool SimpleTryFinally()
@@ -117,7 +155,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				Console.WriteLine("Try");
 			} catch (InvalidOperationException ex) {
 				Console.WriteLine(ex.Message);
-			} catch (Exception ex2) {
+			} catch (SystemException ex2) {
 				Console.WriteLine(ex2.Message);
 			} catch {
 				Console.WriteLine("other");
@@ -146,6 +184,100 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			} finally {
 				if (cancellationTokenSource != null) {
 					cancellationTokenSource.Dispose();
+				}
+			}
+		}
+
+		public void ThrowInFinally()
+		{
+			try {
+			} finally {
+				throw new Exception();
+			}
+		}
+
+#if ROSLYN || !OPT
+		// TODO Non-Roslyn compilers create a second while loop inside the try, by inverting the if
+		// This is fixed in the non-optimised version by the enabling the RemoveDeadCode flag
+		//public bool EarlyExitInLoopTry()
+		//{
+		//	while (true) {
+		//		try {
+		//			while (B(0)) {
+		//				Console.WriteLine();
+		//			}
+		//
+		//			return false;
+		//		} catch {
+		//		}
+		//	}
+		//}
+		public bool EarlyExitInLoopTry()
+		{
+			while (true) {
+				try {
+					if (!B(0)) {
+						return false;
+					}
+
+					Console.WriteLine();
+				} catch {
+				}
+			}
+		}
+#endif
+
+		public bool ComplexConditionalReturnInThrow()
+		{
+			try {
+				if (B(0)) {
+					if (B(1)) {
+						Console.WriteLine("0 && 1");
+						return B(2);
+					}
+
+					if (B(3)) {
+						Console.WriteLine("0 && 3");
+						return !B(2);
+					}
+
+					Console.WriteLine("0");
+				}
+			
+				Console.WriteLine("End Try");
+
+			} catch {
+				try {
+					try {
+						if (((B(0) || B(1)) && B(2)) || B(3)) {
+							return B(4) && !B(5);
+						}
+						if (B(6) || B(7)) {
+							return B(8) || B(9);
+						}
+					} catch {
+						Console.WriteLine("Catch2");
+					}
+					return B(10) && B(11);
+				} catch { 
+					Console.WriteLine("Catch");
+				} finally {
+					Console.WriteLine("Finally");
+				}
+			}
+			return false;
+		}
+
+		public void AppropriateLockExit()
+		{
+			int num = 0;
+			lock (this) {
+				if (num <= 256) {
+					Console.WriteLine(0);
+				} else if (num <= 1024) {
+					Console.WriteLine(1);
+				} else if (num <= 16384) {
+					Console.WriteLine(2);
 				}
 			}
 		}

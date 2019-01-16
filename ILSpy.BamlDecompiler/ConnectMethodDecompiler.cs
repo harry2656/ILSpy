@@ -4,13 +4,17 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Metadata;
 using System.Threading;
-using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.IL.Transforms;
+using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
-using Mono.Cecil;
+using ICSharpCode.Decompiler.TypeSystem.Implementation;
+using ICSharpCode.Decompiler.Util;
+using ICSharpCode.ILSpy;
+using Metadata = ICSharpCode.Decompiler.Metadata;
 
 namespace ILSpy.BamlDecompiler
 {
@@ -27,51 +31,50 @@ namespace ILSpy.BamlDecompiler
 	/// </summary>
 	sealed class ConnectMethodDecompiler
 	{
-		AssemblyDefinition assembly;
-		
-		public ConnectMethodDecompiler(AssemblyDefinition assembly)
+		public List<(LongSet, EventRegistration[])> DecompileEventMappings(Metadata.PEFile module, IAssemblyResolver assemblyResolver,
+			string fullTypeName, CancellationToken cancellationToken)
 		{
-			this.assembly = assembly;
-		}
-		
-		public Dictionary<long, EventRegistration[]> DecompileEventMappings(string fullTypeName, CancellationToken cancellationToken)
-		{
-			var result = new Dictionary<long, EventRegistration[]>();
-			TypeDefinition type = this.assembly.MainModule.GetType(fullTypeName);
-			
-			if (type == null)
+			var result = new List<(LongSet, EventRegistration[])>();
+			var typeSystem = new DecompilerTypeSystem(module, assemblyResolver);
+
+			var typeDefinition = typeSystem.FindType(new FullTypeName(fullTypeName)).GetDefinition();
+			if (typeDefinition == null)
 				return result;
+		
+			IMethod method = null;
+			MethodDefinition metadataEntry = default;
 			
-			MethodDefinition method = null;
-			
-			foreach (var m in type.Methods) {
+			foreach (var m in typeDefinition.GetMethods()) {
 				if (m.Name == "System.Windows.Markup.IComponentConnector.Connect") {
 					method = m;
+					metadataEntry = module.Metadata.GetMethodDefinition((MethodDefinitionHandle)method.MetadataToken);
 					break;
 				}
 			}
 			
-			if (method == null)
+			if (method == null || metadataEntry.RelativeVirtualAddress <= 0)
 				return result;
-			
-			// decompile method and optimize the switch
-			var typeSystem = new DecompilerTypeSystem(method.Module);
-			var ilReader = new ILReader(typeSystem);
-			var function = ilReader.ReadIL(method.Body, cancellationToken);
 
-			var context = new ILTransformContext(function, typeSystem) {
+			var body = module.Reader.GetMethodBody(metadataEntry.RelativeVirtualAddress);
+			var genericContext = new ICSharpCode.Decompiler.TypeSystem.GenericContext(
+				classTypeParameters: method.DeclaringType?.TypeParameters,
+				methodTypeParameters: method.TypeParameters);
+			// decompile method and optimize the switch
+			var ilReader = new ILReader(typeSystem.MainModule);
+			var function = ilReader.ReadIL((MethodDefinitionHandle)method.MetadataToken, body, genericContext, cancellationToken);
+
+			var context = new ILTransformContext(function, typeSystem, null) {
 				CancellationToken = cancellationToken
 			};
 			function.RunTransforms(CSharpDecompiler.GetILTransforms(), context);
 			
 			var block = function.Body.Children.OfType<Block>().First();
-			var ilSwitch = block.Children.OfType<SwitchInstruction>().FirstOrDefault();
+			var ilSwitch = block.Descendants.OfType<SwitchInstruction>().FirstOrDefault();
 			
 			if (ilSwitch != null) {
 				foreach (var section in ilSwitch.Sections) {
 					var events = FindEvents(section.Body);
-					foreach (long id in section.Labels.Values)
-						result.Add(id, events);
+					result.Add((section.Labels, events));
 				}
 			} else {
 				foreach (var ifInst in function.Descendants.OfType<IfInstruction>()) {
@@ -82,7 +85,7 @@ namespace ILSpy.BamlDecompiler
 					if (!comp.Right.MatchLdcI4(out id))
 						continue;
 					var events = FindEvents(comp.Kind == ComparisonKind.Inequality ? ifInst.FalseInst : ifInst.TrueInst);
-					result.Add(id, events);
+					result.Add((new LongSet(id), events));
 				}
 			}
 			return result;
@@ -92,13 +95,18 @@ namespace ILSpy.BamlDecompiler
 		{
 			var events = new List<EventRegistration>();
 			
-			if (inst is Block) {
-				foreach (var node in ((Block)inst).Instructions) {
-					FindEvents(node, events);
-				}
-				FindEvents(((Block)inst).FinalInstruction, events);
-			} else {
-				FindEvents(inst, events);
+			switch (inst) {
+				case Block b:
+					foreach (var node in ((Block)inst).Instructions) {
+						FindEvents(node, events);
+					}
+					FindEvents(((Block)inst).FinalInstruction, events);
+					break;
+				case Branch br:
+					return FindEvents(br.TargetBlock);
+				default:
+					FindEvents(inst, events);
+					break;
 			}
 			return events.ToArray();
 		}

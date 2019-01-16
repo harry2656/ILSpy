@@ -26,6 +26,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 		static void Main()
 		{
 			PreIncrementProperty();
+			PreIncrementIndexer();
+			CallTwice();
+			UnsignedShiftRightInstanceField();
+			UnsignedShiftRightStaticProperty();
+			DivideByBigValue();
+			Overflow();
 		}
 
 		static void Test(int a, int b)
@@ -41,16 +47,19 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			return ++x;
 		}
 
+		static int instanceCount;
+		int instanceNumber = ++instanceCount;
+		
 		int instanceField;
 
 		public int InstanceProperty
 		{
 			get {
-				Console.WriteLine("In get_InstanceProperty");
+				Console.WriteLine("In {0}.get_InstanceProperty", instanceNumber);
 				return instanceField;
 			}
 			set {
-				Console.WriteLine("In set_InstanceProperty, value=" + value);
+				Console.WriteLine("In {0}.set_InstanceProperty, value=" + value, instanceNumber);
 				instanceField = value;
 			}
 		}
@@ -69,10 +78,42 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			}
 		}
 
+		static short shortField;
+
+		public static short ShortProperty {
+			get {
+				Console.WriteLine("In get_ShortProperty");
+				return shortField;
+			}
+			set {
+				Console.WriteLine("In set_ShortProperty, value={0}", value);
+				shortField = value;
+			}
+		}
+
+		static byte byteField;
+
+		public static byte ByteProperty {
+			get {
+				Console.WriteLine("In get_ByteProperty");
+				return byteField;
+			}
+			set {
+				Console.WriteLine("In set_ByteProperty, value={0}", value);
+				byteField = value;
+			}
+		}
+
 		public static Dictionary<string, int> GetDict()
 		{
 			Console.WriteLine("In GetDict()");
-			return new Dictionary<string, int>();
+			return new Dictionary<string, int>() { { GetString(), 5 } };
+		}
+
+		static CompoundAssignment GetObject()
+		{
+			Console.WriteLine("In GetObject() (instance #)");
+			return new CompoundAssignment();
 		}
 
 		static string GetString()
@@ -92,6 +133,80 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 		{
 			Console.WriteLine("PreIncrementIndexer:");
 			Test(X(), ++GetDict()[GetString()]);
+		}
+
+		static void CallTwice()
+		{
+			Console.WriteLine("CallTwice: instanceField:");
+			GetObject().instanceField = GetObject().instanceField + 1;
+			Test(X(), GetObject().instanceField = GetObject().instanceField + 1);
+			Console.WriteLine("CallTwice: InstanceProperty:");
+			GetObject().InstanceProperty = GetObject().InstanceProperty + 1;
+			Test(X(), GetObject().InstanceProperty = GetObject().InstanceProperty + 1);
+			Console.WriteLine("CallTwice: dict indexer:");
+			GetDict()[GetString()] = GetDict()[GetString()] + 1;
+			Test(X(), GetDict()[GetString()] = GetDict()[GetString()] + 1);
+		}
+
+		static void UnsignedShiftRightInstanceField()
+		{
+#if CS70
+			ref int f = ref new CompoundAssignment().instanceField;
+			Test(X(), f = (int)((uint)f >> 2));
+#endif
+		}
+
+		static void UnsignedShiftRightStaticProperty()
+		{
+			Console.WriteLine("UnsignedShiftRightStaticProperty:");
+			StaticProperty = -15;
+			Test(X(), StaticProperty = (int)((uint)StaticProperty >> 2));
+
+			ShortProperty = -20;
+			ShortProperty = (short)((uint)StaticProperty >> 2);
+
+			ShortProperty = -30;
+			ShortProperty = (short)((ushort)StaticProperty >> 2);
+		}
+
+		static void DivideByBigValue()
+		{
+			Console.WriteLine("DivideByBigValue:");
+			ByteProperty = 5;
+			// can't use "ByteProperty /= (byte)(byte.MaxValue + 3)" because that would be division by 2.
+			ByteProperty = (byte)(ByteProperty / (byte.MaxValue + 3));
+
+			ByteProperty = 200;
+			ByteProperty = (byte)(ByteProperty / Id(byte.MaxValue + 3));
+
+			ShortProperty = short.MaxValue;
+			ShortProperty = (short)(ShortProperty / (short.MaxValue + 3));
+		}
+
+		static void Overflow()
+		{
+			Console.WriteLine("Overflow:");
+			ByteProperty = 0;
+			ByteProperty = (byte)checked(ByteProperty + 300);
+			try {
+				ByteProperty = checked((byte)(ByteProperty + 300));
+			} catch (OverflowException) {
+				Console.WriteLine("Overflow OK");
+			}
+
+			ByteProperty = 200;
+			ByteProperty = (byte)checked(ByteProperty + 100);
+			ByteProperty = 201;
+			try {
+				ByteProperty = checked((byte)(ByteProperty + 100));
+			} catch (OverflowException) {
+				Console.WriteLine("Overflow OK");
+			}
+		}
+
+		static T Id<T>(T val)
+		{
+			return val;
 		}
 	}
 }

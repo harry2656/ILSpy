@@ -24,6 +24,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Reflection.Metadata;
 
 namespace ICSharpCode.Decompiler.IL.ControlFlow
 {
@@ -32,16 +33,27 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 	/// </summary>
 	class AsyncAwaitDecompiler : IILTransform
 	{
-		public static bool IsCompilerGeneratedStateMachine(Mono.Cecil.TypeDefinition type)
+		public static bool IsCompilerGeneratedStateMachine(TypeDefinitionHandle type, MetadataReader metadata)
 		{
-			if (!(type.DeclaringType != null && type.IsCompilerGenerated()))
+			TypeDefinition td;
+			if (type.IsNil || (td = metadata.GetTypeDefinition(type)).GetDeclaringType().IsNil)
 				return false;
-			foreach (var i in type.Interfaces) {
-				var iface = i.InterfaceType;
-				if (iface.Namespace == "System.Runtime.CompilerServices" && iface.Name == "IAsyncStateMachine")
+			if (!(type.IsCompilerGenerated(metadata) || td.GetDeclaringType().IsCompilerGenerated(metadata)))
+				return false;
+			foreach (var i in td.GetInterfaceImplementations()) {
+				var tr = metadata.GetInterfaceImplementation(i).Interface.GetFullTypeName(metadata);
+				if (!tr.IsNested && tr.TopLevelTypeName.Namespace == "System.Runtime.CompilerServices" && tr.TopLevelTypeName.Name == "IAsyncStateMachine")
 					return true;
 			}
 			return false;
+		}
+
+		public static bool IsCompilerGeneratedMainMethod(Metadata.PEFile module, MethodDefinitionHandle method)
+		{
+			var metadata = module.Metadata;
+			var definition = metadata.GetMethodDefinition(method);
+			var entrypoint = System.Reflection.Metadata.Ecma335.MetadataTokens.MethodDefinitionHandle(module.Reader.PEHeaders.CorHeader.EntryPointTokenOrRelativeVirtualAddress);
+			return method == entrypoint && metadata.GetString(definition.Name).Equals("<Main>", StringComparison.Ordinal);
 		}
 
 		enum AsyncMethodType
@@ -120,14 +132,22 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			// Re-run control flow simplification over the newly constructed set of gotos,
 			// and inlining because TranslateFieldsToLocalAccess() might have opened up new inlining opportunities.
 			function.RunTransforms(CSharpDecompiler.EarlyILTransforms(), context);
+
+			AwaitInCatchTransform.Run(function, context);
+			AwaitInFinallyTransform.Run(function, context);
 		}
 
 		private void CleanUpBodyOfMoveNext(ILFunction function)
 		{
 			context.StepStartGroup("CleanUpBodyOfMoveNext", function);
+			// Copy-propagate stack slots holding an 'ldloca':
+			foreach (var stloc in function.Descendants.OfType<StLoc>().Where(s => s.Variable.Kind == VariableKind.StackSlot && s.Variable.IsSingleDefinition && s.Value is LdLoca).ToList()) {
+				CopyPropagation.Propagate(stloc, context);
+			}
+
 			// Simplify stobj(ldloca) -> stloc
 			foreach (var stobj in function.Descendants.OfType<StObj>()) {
-				ExpressionTransforms.StObjToStLoc(stobj, context);
+				EarlyExpressionTransforms.StObjToStLoc(stobj, context);
 			}
 
 			// Copy-propagate temporaries holding a copy of 'this'.
@@ -137,7 +157,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			new RemoveDeadVariableInit().Run(function, context);
 			// Run inlining, but don't remove dead variables (they might get revived by TranslateFieldsToLocalAccess)
 			foreach (var block in function.Descendants.OfType<Block>()) {
-				ILInlining.InlineAllInBlock(block, context);
+				ILInlining.InlineAllInBlock(function, block, context);
 			}
 			context.StepEndGroup();
 		}
@@ -169,7 +189,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				return false;
 			if (startCall.Method.Name != "Start")
 				return false;
-			taskType = context.TypeSystem.Resolve(function.Method.ReturnType);
+			taskType = function.Method.ReturnType;
 			builderType = startCall.Method.DeclaringTypeDefinition;
 			const string ns = "System.Runtime.CompilerServices";
 			if (taskType.IsKnownType(KnownTypeCode.Void)) {
@@ -179,12 +199,12 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 					return false;
 			} else if (taskType.IsKnownType(KnownTypeCode.Task)) {
 				methodType = AsyncMethodType.Task;
-				underlyingReturnType = context.TypeSystem.Compilation.FindType(KnownTypeCode.Void);
+				underlyingReturnType = context.TypeSystem.FindType(KnownTypeCode.Void);
 				if (builderType?.FullTypeName != new TopLevelTypeName(ns, "AsyncTaskMethodBuilder", 0))
 					return false;
 			} else if (taskType.IsKnownType(KnownTypeCode.TaskOfT)) {
 				methodType = AsyncMethodType.TaskOfT;
-				underlyingReturnType = TaskType.UnpackTask(context.TypeSystem.Compilation, taskType);
+				underlyingReturnType = TaskType.UnpackTask(context.TypeSystem, taskType);
 				if (builderType?.FullTypeName != new TopLevelTypeName(ns, "AsyncTaskMethodBuilder", 1))
 					return false;
 			} else {
@@ -312,7 +332,11 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 		/// </summary>
 		void AnalyzeMoveNext()
 		{
-			var moveNextMethod = context.TypeSystem.GetCecil(stateMachineType)?.Methods.FirstOrDefault(f => f.Name == "MoveNext");
+			if (stateMachineType.MetadataToken.IsNil)
+				throw new SymbolicAnalysisFailedException();
+			var metadata = context.PEFile.Metadata;
+			var moveNextMethod = metadata.GetTypeDefinition((TypeDefinitionHandle)stateMachineType.MetadataToken)
+				.GetMethods().FirstOrDefault(f => metadata.GetString(metadata.GetMethodDefinition(f).Name) == "MoveNext");
 			if (moveNextMethod == null)
 				throw new SymbolicAnalysisFailedException();
 			moveNextFunction = YieldReturnDecompiler.CreateILAst(moveNextMethod, context);
@@ -495,6 +519,17 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 					});
 				}
 			}
+			// Delete dead loads of the state cache variable:
+			foreach (var block in function.Descendants.OfType<Block>()) {
+				for (int i = block.Instructions.Count - 1; i >= 0; i--) {
+					if (block.Instructions[i].MatchStLoc(out var v, out var value)
+						&& v.IsSingleDefinition && v.LoadCount == 0
+						&& value.MatchLdLoc(cachedStateVar))
+					{
+						block.Instructions.RemoveAt(i);
+					}
+				}
+			}
 		}
 		#endregion
 
@@ -565,9 +600,15 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				pos--;
 			}
 
-			// call AwaitUnsafeOnCompleted(ldflda <>t__builder(ldloc this), ldloca awaiter, ldloc this)
-			if (!MatchCall(block.Instructions[pos], "AwaitUnsafeOnCompleted", out var callArgs))
+			if (MatchCall(block.Instructions[pos], "AwaitUnsafeOnCompleted", out var callArgs)) {
+				// call AwaitUnsafeOnCompleted(ldflda <>t__builder(ldloc this), ldloca awaiter, ldloc this)
+			} else if (MatchCall(block.Instructions[pos], "AwaitOnCompleted", out callArgs)) {
+				// call AwaitOnCompleted(ldflda <>t__builder(ldloc this), ldloca awaiter, ldloc this)
+				// The C# compiler emits the non-unsafe call when the awaiter does not implement
+				// ICriticalNotifyCompletion.
+			} else {
 				return false;
+			}
 			if (callArgs.Count != 3)
 				return false;
 			if (!IsBuilderFieldOnThis(callArgs[0]))
@@ -763,17 +804,26 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				return false;
 			if (!target.MatchLdThis())
 				return false;
-			if (field.MemberDefinition != awaiterField)
+			if (!field.Equals(awaiterField))
 				return false;
 			pos++;
 
 			// stfld awaiterField(ldloc this, default.value)
 			if (block.Instructions[pos].MatchStFld(out target, out field, out value)
 				&& target.MatchLdThis()
-				&& field.MemberDefinition == awaiterField
+				&& field.Equals(awaiterField)
 				&& value.OpCode == OpCode.DefaultValue)
 			{
 				pos++;
+			} else {
+				// {stloc V_6(default.value System.Runtime.CompilerServices.TaskAwaiter)}
+				// {stobj System.Runtime.CompilerServices.TaskAwaiter`1[[System.Int32]](ldflda <>u__$awaiter4(ldloc this), ldloc V_6) at IL_0163}
+				if (block.Instructions[pos].MatchStLoc(out var variable, out value) && value.OpCode == OpCode.DefaultValue
+					&& block.Instructions[pos + 1].MatchStFld(out target, out field, out value)
+					&& field.Equals(awaiterField)
+					&& value.MatchLdLoc(variable)) {
+					pos += 2;
+				}
 			}
 
 			// stloc S_28(ldc.i4 -1)
@@ -793,7 +843,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			if (block.Instructions[pos].MatchStFld(out target, out field, out value)) {
 				if (!target.MatchLdThis())
 					return false;
-				if (field.MemberDefinition != stateField)
+				if (!field.MemberDefinition.Equals(stateField.MemberDefinition))
 					return false;
 				if (!(value.MatchLdcI4(initialState) || value.MatchLdLoc(m1Var)))
 					return false;
@@ -883,7 +933,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				}
 			}
 			// if there's any remaining loads (there shouldn't be), replace them with the constant 1
-			foreach (LdLoc load in doFinallyBodies.LoadInstructions) {
+			foreach (LdLoc load in doFinallyBodies.LoadInstructions.ToArray()) {
 				load.ReplaceWith(new LdcI4(1) { ILRange = load.ILRange });
 			}
 			context.StepEndGroup(keepIfEmpty: true);
@@ -894,7 +944,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			if (body == null)
 				return null;
 			Block entryPoint = body.EntryPoint;
-			while (entryPoint.Instructions[0].MatchBranch(out var targetBlock) && targetBlock.IncomingEdgeCount == 1) {
+			while (entryPoint.Instructions[0].MatchBranch(out var targetBlock) && targetBlock.IncomingEdgeCount == 1 && targetBlock.Parent == body) {
 				entryPoint = targetBlock;
 			}
 			return entryPoint;

@@ -23,40 +23,6 @@ namespace ICSharpCode.Decompiler.TypeSystem
 	/// <summary>
 	/// Type parameter of a generic class/method.
 	/// </summary>
-	public interface IUnresolvedTypeParameter : INamedElement
-	{
-		/// <summary>
-		/// Get the type of this type parameter's owner.
-		/// </summary>
-		/// <returns>SymbolKind.TypeDefinition or SymbolKind.Method</returns>
-		SymbolKind OwnerType { get; }
-		
-		/// <summary>
-		/// Gets the index of the type parameter in the type parameter list of the owning method/class.
-		/// </summary>
-		int Index { get; }
-		
-		/// <summary>
-		/// Gets the list of attributes declared on this type parameter.
-		/// </summary>
-		IList<IUnresolvedAttribute> Attributes { get; }
-		
-		/// <summary>
-		/// Gets the variance of this type parameter.
-		/// </summary>
-		VarianceModifier Variance { get; }
-		
-		/// <summary>
-		/// Gets the region where the type parameter is defined.
-		/// </summary>
-		DomRegion Region { get; }
-		
-		ITypeParameter CreateResolvedTypeParameter(ITypeResolveContext context);
-	}
-	
-	/// <summary>
-	/// Type parameter of a generic class/method.
-	/// </summary>
 	public interface ITypeParameter : IType, ISymbol
 	{
 		/// <summary>
@@ -85,21 +51,16 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		/// Gets the name of the type parameter.
 		/// </summary>
 		new string Name { get; }
-		
+
 		/// <summary>
-		/// Gets the list of attributes declared on this type parameter.
+		/// Gets the attributes declared on this type parameter.
 		/// </summary>
-		IList<IAttribute> Attributes { get; }
+		IEnumerable<IAttribute> GetAttributes();
 		
 		/// <summary>
 		/// Gets the variance of this type parameter.
 		/// </summary>
 		VarianceModifier Variance { get; }
-		
-		/// <summary>
-		/// Gets the region where the type parameter is defined.
-		/// </summary>
-		DomRegion Region { get; }
 		
 		/// <summary>
 		/// Gets the effective base class of this type parameter.
@@ -109,7 +70,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		/// <summary>
 		/// Gets the effective interface set of this type parameter.
 		/// </summary>
-		ICollection<IType> EffectiveInterfaceSet { get; }
+		IReadOnlyCollection<IType> EffectiveInterfaceSet { get; }
 		
 		/// <summary>
 		/// Gets if the type parameter has the 'new()' constraint.

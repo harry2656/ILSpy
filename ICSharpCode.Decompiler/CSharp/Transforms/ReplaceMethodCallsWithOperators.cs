@@ -17,12 +17,13 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Syntax.PatternMatching;
 using ICSharpCode.Decompiler.TypeSystem;
-using Mono.Cecil;
 
 namespace ICSharpCode.Decompiler.CSharp.Transforms
 {
@@ -53,7 +54,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (method == null)
 				return;
 			var arguments = invocationExpression.Arguments.ToArray();
-			
+
 			// Reduce "String.Concat(a, b)" to "a + b"
 			if (method.Name == "Concat" && method.DeclaringType.FullName == "System.String" && CheckArgumentsForStringConcat(arguments)) {
 				invocationExpression.Arguments.Clear(); // detach arguments from invocationExpression
@@ -61,20 +62,25 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				for (int i = 1; i < arguments.Length; i++) {
 					expr = new BinaryOperatorExpression(expr, BinaryOperatorType.Add, arguments[i]);
 				}
+				expr.CopyAnnotationsFrom(invocationExpression);
 				invocationExpression.ReplaceWith(expr);
 				return;
 			}
-			
+
 			switch (method.FullName) {
 				case "System.Type.GetTypeFromHandle":
 					if (arguments.Length == 1) {
 						if (typeHandleOnTypeOfPattern.IsMatch(arguments[0])) {
-							invocationExpression.ReplaceWith(((MemberReferenceExpression)arguments[0]).Target);
+							Expression target = ((MemberReferenceExpression)arguments[0]).Target;
+							target.CopyInstructionsFrom(invocationExpression);
+							invocationExpression.ReplaceWith(target);
 							return;
 						}
 					}
 					break;
+					/*
 				case "System.Reflection.FieldInfo.GetFieldFromHandle":
+					// TODO : This is dead code because LdTokenAnnotation is not added anywhere:
 					if (arguments.Length == 1) {
 						MemberReferenceExpression mre = arguments[0] as MemberReferenceExpression;
 						if (mre != null && mre.MemberName == "FieldHandle" && mre.Target.Annotation<LdTokenAnnotation>() != null) {
@@ -98,13 +104,14 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						}
 					}
 					break;
+					*/
 				case "System.Activator.CreateInstance":
-					if (method.TypeArguments.Count == 1 && arguments.Length == 0 && method.TypeArguments[0].Kind == TypeKind.TypeParameter) {
+					if (arguments.Length == 0 && method.TypeArguments.Count == 1 && IsInstantiableTypeParameter(method.TypeArguments[0])) {
 						invocationExpression.ReplaceWith(new ObjectCreateExpression(context.TypeSystemAstBuilder.ConvertType(method.TypeArguments.First())));
 					}
 					break;
 			}
-			
+
 			BinaryOperatorType? bop = GetBinaryOperatorTypeFromMetadataName(method.Name);
 			if (bop != null && arguments.Length == 2) {
 				invocationExpression.Arguments.Clear(); // detach arguments from invocationExpression
@@ -129,16 +136,17 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				);
 				return;
 			}
-			if (method.Name == "op_Implicit" && arguments.Length == 1) {
-				invocationExpression.ReplaceWith(arguments[0]);
-				return;
-			}
 			if (method.Name == "op_True" && arguments.Length == 1 && invocationExpression.Role == Roles.Condition) {
 				invocationExpression.ReplaceWith(arguments[0]);
 				return;
 			}
-			
+
 			return;
+		}
+
+		bool IsInstantiableTypeParameter(IType type)
+		{
+			return type is ITypeParameter tp && tp.HasDefaultConstructorConstraint;
 		}
 
 		bool CheckArgumentsForStringConcat(Expression[] arguments)
@@ -189,13 +197,13 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					return null;
 			}
 		}
-		
+
 		static UnaryOperatorType? GetUnaryOperatorTypeFromMetadataName(string name)
 		{
 			switch (name) {
 				case "op_LogicalNot":
 					return UnaryOperatorType.Not;
-				case  "op_OnesComplement":
+				case "op_OnesComplement":
 					return UnaryOperatorType.BitNot;
 				case "op_UnaryNegation":
 					return UnaryOperatorType.Minus;
@@ -209,7 +217,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					return null;
 			}
 		}
-		
+
 		static readonly Expression getMethodOrConstructorFromHandlePattern =
 			new CastExpression(new Choice {
 					 new TypePattern(typeof(MethodInfo)),
@@ -218,7 +226,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				new NamedNode("ldtokenNode", new MemberReferenceExpression(new LdTokenPattern("method").ToExpression(), "MethodHandle")),
 				new OptionalNode(new MemberReferenceExpression(new TypeOfExpression(new AnyNode("declaringType")), "TypeHandle"))
 			));
-		
+
 		public override void VisitCastExpression(CastExpression castExpression)
 		{
 			base.VisitCastExpression(castExpression);
@@ -234,7 +242,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				castExpression.ReplaceWith(m.Get<AstNode>("ldtokenNode").Single().CopyAnnotationsFrom(castExpression));
 			}
 		}
-		
+
 		void IAstTransform.Run(AstNode rootNode, TransformContext context)
 		{
 			try {

@@ -16,9 +16,10 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Windows.Controls;
 using System.Xml.Linq;
-using ICSharpCode.Decompiler;
 
 namespace ICSharpCode.ILSpy.Options
 {
@@ -35,7 +36,7 @@ namespace ICSharpCode.ILSpy.Options
 		
 		public void Load(ILSpySettings settings)
 		{
-			this.DataContext = LoadDecompilerSettings(settings);
+			this.DataContext = currentDecompilerSettings ?? LoadDecompilerSettings(settings);
 		}
 		
 		static DecompilerSettings currentDecompilerSettings;
@@ -50,16 +51,12 @@ namespace ICSharpCode.ILSpy.Options
 		{
 			XElement e = settings["DecompilerSettings"];
 			DecompilerSettings s = new DecompilerSettings();
-			s.AnonymousMethods = (bool?)e.Attribute("anonymousMethods") ?? s.AnonymousMethods;
-			s.AnonymousTypes = (bool?)e.Attribute("anonymousTypes") ?? s.AnonymousTypes;
-			s.YieldReturn = (bool?)e.Attribute("yieldReturn") ?? s.YieldReturn;
-			s.AsyncAwait = (bool?)e.Attribute("asyncAwait") ?? s.AsyncAwait;
-			s.AutomaticProperties = (bool?) e.Attribute("automaticProperties") ?? s.AutomaticProperties;
-			s.QueryExpressions = (bool?)e.Attribute("queryExpressions") ?? s.QueryExpressions;
-			s.ExpressionTrees = (bool?)e.Attribute("expressionTrees") ?? s.ExpressionTrees;
-			s.UseDebugSymbols = (bool?)e.Attribute("useDebugSymbols") ?? s.UseDebugSymbols;
+			s.ShowDebugInfo = (bool?)e.Attribute("showDebugInfo") ?? s.ShowDebugInfo;
 			s.ShowXmlDocumentation = (bool?)e.Attribute("xmlDoc") ?? s.ShowXmlDocumentation;
-			s.FoldBraces = (bool?)e.Attribute("foldBraces") ?? s.FoldBraces;
+			s.RemoveDeadCode = (bool?)e.Attribute("removeDeadCode") ?? s.RemoveDeadCode;
+			s.UsingDeclarations = (bool?)e.Attribute("usingDeclarations") ?? s.UsingDeclarations;
+			s.AlwaysUseBraces = (bool?)e.Attribute("alwaysUseBraces") ?? s.AlwaysUseBraces;
+			s.ApplyWindowsRuntimeProjections = (bool?)e.Attribute("applyWindowsRuntimeProjections") ?? s.ApplyWindowsRuntimeProjections;
 			return s;
 		}
 		
@@ -67,24 +64,144 @@ namespace ICSharpCode.ILSpy.Options
 		{
 			DecompilerSettings s = (DecompilerSettings)this.DataContext;
 			XElement section = new XElement("DecompilerSettings");
-			section.SetAttributeValue("anonymousMethods", s.AnonymousMethods);
-			section.SetAttributeValue("anonymousTypes", s.AnonymousTypes);
-			section.SetAttributeValue("yieldReturn", s.YieldReturn);
-			section.SetAttributeValue("asyncAwait", s.AsyncAwait);
-			section.SetAttributeValue("automaticProperties", s.AutomaticProperties);
-			section.SetAttributeValue("queryExpressions", s.QueryExpressions);
-			section.SetAttributeValue("expressionTrees", s.ExpressionTrees);
 			section.SetAttributeValue("useDebugSymbols", s.UseDebugSymbols);
+			section.SetAttributeValue("showDebugInfo", s.ShowDebugInfo);
 			section.SetAttributeValue("xmlDoc", s.ShowXmlDocumentation);
-			section.SetAttributeValue("foldBraces", s.FoldBraces);
-			
+			section.SetAttributeValue("removeDeadCode", s.RemoveDeadCode);
+			section.SetAttributeValue("usingDeclarations", s.UsingDeclarations);
+			section.SetAttributeValue("alwaysUseBraces", s.AlwaysUseBraces);
+			section.SetAttributeValue("applyWindowsRuntimeProjections", s.ApplyWindowsRuntimeProjections);
+
 			XElement existingElement = root.Element("DecompilerSettings");
 			if (existingElement != null)
 				existingElement.ReplaceWith(section);
 			else
 				root.Add(section);
 			
-			currentDecompilerSettings = null; // invalidate cached settings
+			currentDecompilerSettings = s; // update cached settings
+		}
+	}
+
+	public class DecompilerSettings : INotifyPropertyChanged
+	{
+		bool showXmlDocumentation = true;
+
+		/// <summary>
+		/// Gets/Sets whether to include XML documentation comments in the decompiled code.
+		/// </summary>
+		public bool ShowXmlDocumentation {
+			get { return showXmlDocumentation; }
+			set {
+				if (showXmlDocumentation != value) {
+					showXmlDocumentation = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool decompileMemberBodies = true;
+
+		/// <summary>
+		/// Gets/Sets whether member bodies should be decompiled.
+		/// </summary>
+		public bool DecompileMemberBodies {
+			get { return decompileMemberBodies; }
+			set {
+				if (decompileMemberBodies != value) {
+					decompileMemberBodies = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool useDebugSymbols = true;
+
+		/// <summary>
+		/// Gets/Sets whether to use variable names from debug symbols, if available.
+		/// </summary>
+		public bool UseDebugSymbols {
+			get { return useDebugSymbols; }
+			set {
+				if (useDebugSymbols != value) {
+					useDebugSymbols = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool usingDeclarations = true;
+
+		public bool UsingDeclarations {
+			get { return usingDeclarations; }
+			set {
+				if (usingDeclarations != value) {
+					usingDeclarations = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool showDebugInfo;
+
+		public bool ShowDebugInfo {
+			get { return showDebugInfo; }
+			set {
+				if (showDebugInfo != value) {
+					showDebugInfo = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool removeDeadCode = false;
+
+		public bool RemoveDeadCode {
+			get { return removeDeadCode; }
+			set {
+				if (removeDeadCode != value) {
+					removeDeadCode = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool alwaysUseBraces = true;
+
+		/// <summary>
+		/// Gets/Sets whether to use braces for single-statement-blocks. 
+		/// </summary>
+		public bool AlwaysUseBraces {
+			get { return alwaysUseBraces; }
+			set {
+				if (alwaysUseBraces != value) {
+					alwaysUseBraces = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool applyWindowsRuntimeProjections = true;
+
+		/// <summary>
+		/// Gets/Sets whether to Windows Runtime projections to all loaded assemblies. 
+		/// </summary>
+		public bool ApplyWindowsRuntimeProjections {
+			get { return applyWindowsRuntimeProjections; }
+			set {
+				if (applyWindowsRuntimeProjections != value) {
+					applyWindowsRuntimeProjections = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		public event PropertyChangedEventHandler PropertyChanged;
+
+		protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
+		{
+			if (PropertyChanged != null) {
+				PropertyChanged(this, new PropertyChangedEventArgs(propertyName));
+			}
 		}
 	}
 }

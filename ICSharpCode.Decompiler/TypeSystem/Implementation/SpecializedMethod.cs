@@ -29,6 +29,21 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 	/// </summary>
 	public class SpecializedMethod : SpecializedParameterizedMember, IMethod
 	{
+		internal static IMethod Create(IMethod methodDefinition, TypeParameterSubstitution substitution)
+		{
+			if (TypeParameterSubstitution.Identity.Equals(substitution))
+				return methodDefinition;
+			if (methodDefinition.DeclaringType is ArrayType)
+				return new SpecializedMethod(methodDefinition, substitution);
+			if (methodDefinition.TypeParameters.Count == 0) {
+				if (methodDefinition.DeclaringType.TypeParameterCount == 0)
+					return methodDefinition;
+				if (substitution.MethodTypeArguments != null && substitution.MethodTypeArguments.Count > 0)
+					substitution = new TypeParameterSubstitution(substitution.ClassTypeArguments, EmptyList<IType>.Instance);
+			}
+			return new SpecializedMethod(methodDefinition, substitution);
+		}
+
 		readonly IMethod methodDefinition;
 		readonly ITypeParameter[] specializedTypeParameters;
 		readonly bool isParameterized;
@@ -74,23 +89,13 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			}
 		}
 		
-		public IList<IType> TypeArguments {
+		public IReadOnlyList<IType> TypeArguments {
 			get { return this.Substitution.MethodTypeArguments ?? EmptyList<IType>.Instance; }
 		}
+
+		public IEnumerable<IAttribute> GetReturnTypeAttributes() => methodDefinition.GetReturnTypeAttributes();
 		
-		public bool IsParameterized {
-			get { return isParameterized; }
-		}
-		
-		public IList<IUnresolvedMethod> Parts {
-			get { return methodDefinition.Parts; }
-		}
-		
-		public IList<IAttribute> ReturnTypeAttributes {
-			get { return methodDefinition.ReturnTypeAttributes; }
-		}
-		
-		public IList<ITypeParameter> TypeParameters {
+		public IReadOnlyList<ITypeParameter> TypeParameters {
 			get {
 				return specializedTypeParameters ?? methodDefinition.TypeParameters;
 			}
@@ -110,14 +115,6 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		
 		public bool IsOperator {
 			get { return methodDefinition.IsOperator; }
-		}
-		
-		public bool IsPartial {
-			get { return methodDefinition.IsPartial; }
-		}
-		
-		public bool IsAsync {
-			get { return methodDefinition.IsAsync; }
 		}
 		
 		public bool HasBody {
@@ -152,29 +149,15 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			}
 		}
 
-		public override IMemberReference ToReference()
+		public override bool Equals(IMember obj, TypeVisitor typeNormalization)
 		{
-			// Pass the MethodTypeArguments to the SpecializingMemberReference only if
-			// the generic method itself is parameterized, not if the generic method is only
-			// specialized with class type arguments.
-			
-			// This is necessary due to this part of the ToReference() contract:
-			//   If this member is specialized using open generic types, the resulting member reference will need to be looked up in an appropriate generic context.
-			//   Otherwise, the main resolve context of a compilation is sufficient.
-			// ->
-			// This means that if the method itself isn't specialized,
-			// we must not include TypeParameterReferences for the specialized type parameters
-			// in the resulting member reference.
-			if (isParameterized) {
-				return new SpecializingMemberReference(
-					baseMember.ToReference(),
-					ToTypeReference(base.Substitution.ClassTypeArguments),
-					ToTypeReference(base.Substitution.MethodTypeArguments));
-			} else {
-				return base.ToReference();
-			}
+			SpecializedMethod other = obj as SpecializedMethod;
+			if (other == null)
+				return false;
+			return this.baseMember.Equals(other.baseMember, typeNormalization)
+				&& this.substitutionWithoutSpecializedTypeParameters.Equals(other.substitutionWithoutSpecializedTypeParameters, typeNormalization);
 		}
-		
+
 		public override bool Equals(object obj)
 		{
 			SpecializedMethod other = obj as SpecializedMethod;
@@ -238,13 +221,15 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			internal TypeVisitor substitution;
 			
 			public SpecializedTypeParameter(ITypeParameter baseTp, IMethod specializedOwner)
-				: base(specializedOwner, baseTp.Index, baseTp.Name, baseTp.Variance, baseTp.Attributes, baseTp.Region)
+				: base(specializedOwner, baseTp.Index, baseTp.Name, baseTp.Variance)
 			{
 				// We don't have to consider already-specialized baseTps because
 				// we read the baseTp directly from the unpacked memberDefinition.
 				this.baseTp = baseTp;
 			}
-			
+
+			public override IEnumerable<IAttribute> GetAttributes() => baseTp.GetAttributes();
+
 			public override int GetHashCode()
 			{
 				return baseTp.GetHashCode() ^ this.Owner.GetHashCode();

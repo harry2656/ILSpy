@@ -16,6 +16,7 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System;
 using System.Collections.Generic;
 using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
@@ -29,7 +30,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 	/// </summary>
 	public abstract class LambdaResolveResult : ResolveResult
 	{
-		protected LambdaResolveResult() : base(SpecialType.UnknownType)
+		protected LambdaResolveResult() : base(SpecialType.NoType)
 		{
 		}
 		
@@ -68,7 +69,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		/// <summary>
 		/// Gets the list of parameters.
 		/// </summary>
-		public abstract IList<IParameter> Parameters { get; }
+		public abstract IReadOnlyList<IParameter> Parameters { get; }
 		
 		/// <summary>
 		/// Gets the return type of the lambda.
@@ -96,5 +97,84 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		{
 			return new [] { this.Body };
 		}
+	}
+
+	sealed class DecompiledLambdaResolveResult : LambdaResolveResult
+	{
+		readonly IL.ILFunction function;
+		public readonly IType DelegateType;
+
+		/// <summary>
+		/// The inferred return type.
+		/// Can differ from <c>ReturnType</c> if a return statement
+		/// performs an implicit conversion.
+		/// </summary>
+		public IType InferredReturnType;
+
+		public DecompiledLambdaResolveResult(IL.ILFunction function,
+			IType delegateType,
+			IType inferredReturnType,
+			bool hasParameterList,
+			bool isAnonymousMethod,
+			bool isImplicitlyTyped)
+		{
+			this.function = function ?? throw new ArgumentNullException(nameof(function));
+			this.DelegateType = delegateType ?? throw new ArgumentNullException(nameof(delegateType));
+			this.InferredReturnType = inferredReturnType ?? throw new ArgumentNullException(nameof(inferredReturnType));
+			this.HasParameterList = hasParameterList;
+			this.IsAnonymousMethod = isAnonymousMethod;
+			this.IsImplicitlyTyped = isImplicitlyTyped;
+			this.Body = new ResolveResult(SpecialType.UnknownType);
+		}
+
+		public override bool HasParameterList { get; }
+		public override bool IsAnonymousMethod { get; }
+		public override bool IsImplicitlyTyped { get; }
+		public override bool IsAsync => function.IsAsync;
+
+		public override IReadOnlyList<IParameter> Parameters => function.Parameters;
+		public override IType ReturnType => function.ReturnType;
+
+		public override ResolveResult Body { get; }
+
+		public override IType GetInferredReturnType(IType[] parameterTypes)
+		{
+			// We don't know how to compute which type would be inferred if
+			// given other parameter types.
+			// Let's hope this is good enough:
+			return InferredReturnType;
+		}
+
+		public override Conversion IsValid(IType[] parameterTypes, IType returnType, CSharpConversions conversions)
+		{
+			// Anonymous method expressions without parameter lists are applicable to any parameter list.
+			if (HasParameterList) {
+				if (this.Parameters.Count != parameterTypes.Length)
+					return Conversion.None;
+				for (int i = 0; i < parameterTypes.Length; ++i) {
+					if (!parameterTypes[i].Equals(this.Parameters[i].Type)) {
+						if (IsImplicitlyTyped) {
+							// it's possible that different parameter types also lead to a valid conversion
+							return LambdaConversion.Instance;
+						} else {
+							return Conversion.None;
+						}
+					}
+				}
+			}
+			if (returnType.Equals(this.ReturnType)) {
+				return LambdaConversion.Instance;
+			} else {
+				return Conversion.None;
+			}
+		}
+	}
+
+	class LambdaConversion : Conversion
+	{
+		public static readonly LambdaConversion Instance = new LambdaConversion();
+
+		public override bool IsAnonymousFunctionConversion => true;
+		public override bool IsImplicit => true;
 	}
 }

@@ -22,9 +22,7 @@ using System.Diagnostics;
 using System.Linq;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Syntax.PatternMatching;
-using ICSharpCode.Decompiler.CSharp.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem;
-using Mono.Cecil;
 using ICSharpCode.Decompiler.Semantics;
 
 namespace ICSharpCode.Decompiler.CSharp.Transforms
@@ -72,35 +70,25 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		
 		public override AstNode VisitExpressionStatement(ExpressionStatement expressionStatement)
 		{
-			AstNode result;
+			AstNode result = TransformForeachOnMultiDimArray(expressionStatement);
+			if (result != null)
+				return result;
 			result = TransformFor(expressionStatement);
 			if (result != null)
 				return result;
-			if (context.Settings.AutomaticProperties) {
-				result = ReplaceBackingFieldUsage(expressionStatement);
-				if (result != null)
-					return result;
-			}
-			if (context.Settings.AutomaticEvents) {
-				result = ReplaceEventFieldAnnotation(expressionStatement);
-				if (result != null)
-					return result;
-			}
 			return base.VisitExpressionStatement(expressionStatement);
 		}
-		
-		public override AstNode VisitWhileStatement(WhileStatement whileStatement)
+
+		public override AstNode VisitForStatement(ForStatement forStatement)
 		{
-			return TransformDoWhile(whileStatement) ?? base.VisitWhileStatement(whileStatement);
+			AstNode result = TransformForeachOnArray(forStatement);
+			if (result != null)
+				return result;
+			return base.VisitForStatement(forStatement);
 		}
-		
+
 		public override AstNode VisitIfElseStatement(IfElseStatement ifElseStatement)
 		{
-			if (context.Settings.SwitchStatementOnString) {
-				AstNode result = TransformSwitchOnString(ifElseStatement);
-				if (result != null)
-					return result;
-			}
 			AstNode simplifiedIfElse = SimplifyCascadingIfElseStatements(ifElseStatement);
 			if (simplifiedIfElse != null)
 				return simplifiedIfElse;
@@ -133,7 +121,12 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		{
 			return TransformDestructor(methodDeclaration) ?? base.VisitMethodDeclaration(methodDeclaration);
 		}
-		
+
+		public override AstNode VisitDestructorDeclaration(DestructorDeclaration destructorDeclaration)
+		{
+			return TransformDestructorBody(destructorDeclaration) ?? base.VisitDestructorDeclaration(destructorDeclaration);
+		}
+
 		public override AstNode VisitTryCatchStatement(TryCatchStatement tryCatchStatement)
 		{
 			return TransformTryCatchFinally(tryCatchStatement) ?? base.VisitTryCatchStatement(tryCatchStatement);
@@ -174,26 +167,24 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		{
 			Match m1 = variableAssignPattern.Match(node);
 			if (!m1.Success) return null;
-			var variableName = m1.Get<IdentifierExpression>("variable").Single().Identifier;
+			var variable = m1.Get<IdentifierExpression>("variable").Single().GetILVariable();
 			AstNode next = node.NextSibling;
-			if (next is ForStatement forStatement) {
-				if ((forStatement.Iterators.FirstOrDefault() is ExpressionStatement stmt
-					&& stmt.Expression is AssignmentExpression assign
-					&& variableName == assign.Left.ToString())
-				|| (forStatement.Condition is BinaryOperatorExpression cond
-					&& variableName == cond.Left.ToString()))
-				{
-					node.Remove();
-					forStatement.InsertChildAfter(null, node, ForStatement.InitializerRole);
-					return forStatement;
-				}
+			if (next is ForStatement forStatement && ForStatementUsesVariable(forStatement, variable)) {
+				node.Remove();
+				next.InsertChildAfter(null, node, ForStatement.InitializerRole);
+				return (ForStatement)next;
 			}
 			Match m3 = forPattern.Match(next);
 			if (!m3.Success) return null;
 			// ensure the variable in the for pattern is the same as in the declaration
-			if (variableName != m3.Get<IdentifierExpression>("ident").Single().Identifier)
+			if (variable != m3.Get<IdentifierExpression>("ident").Single().GetILVariable())
 				return null;
 			WhileStatement loop = (WhileStatement)next;
+			// Cannot convert to for loop, because that would change the semantics of the program.
+			// continue in while jumps to the condition block.
+			// Whereas continue in for jumps to the increment block.
+			if (loop.DescendantNodes(DescendIntoStatement).OfType<Statement>().Any(s => s is ContinueStatement))
+				return null;
 			node.Remove();
 			BlockStatement newBody = new BlockStatement();
 			foreach (Statement stmt in m3.Get<Statement>("statement"))
@@ -207,223 +198,253 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			loop.ReplaceWith(forStatement);
 			return forStatement;
 		}
-		#endregion
-		
-		#region doWhile
-		static readonly WhileStatement doWhilePattern = new WhileStatement {
-			Condition = new PrimitiveExpression(true),
-			EmbeddedStatement = new BlockStatement {
-				Statements = {
-					new Repeat(new AnyNode("statement")),
-					new IfElseStatement {
-						Condition = new AnyNode("condition"),
-						TrueStatement = new BlockStatement { new BreakStatement() }
-					}
-				}
-			}};
-		
-		public DoWhileStatement TransformDoWhile(WhileStatement whileLoop)
-		{
-			Match m = doWhilePattern.Match(whileLoop);
-			if (m.Success) {
-				DoWhileStatement doLoop = new DoWhileStatement();
-				doLoop.Condition = new UnaryOperatorExpression(UnaryOperatorType.Not, m.Get<Expression>("condition").Single().Detach());
-				//doLoop.Condition.AcceptVisitor(new PushNegation(), null);
-				BlockStatement block = (BlockStatement)whileLoop.EmbeddedStatement;
-				block.Statements.Last().Remove(); // remove if statement
-				doLoop.EmbeddedStatement = block.Detach();
-				doLoop.CopyAnnotationsFrom(whileLoop);
-				whileLoop.ReplaceWith(doLoop);
-				
-				// we may have to extract variable definitions out of the loop if they were used in the condition:
-				foreach (var varDecl in block.Statements.OfType<VariableDeclarationStatement>()) {
-					VariableInitializer v = varDecl.Variables.Single();
-					if (doLoop.Condition.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == v.Name)) {
-						AssignmentExpression assign = new AssignmentExpression(new IdentifierExpression(v.Name), v.Initializer.Detach());
-						// move annotations from v to assign:
-						assign.CopyAnnotationsFrom(v);
-						v.RemoveAnnotations<object>();
-						// remove varDecl with assignment; and move annotations from varDecl to the ExpressionStatement:
-						varDecl.ReplaceWith(new ExpressionStatement(assign).CopyAnnotationsFrom(varDecl));
-						varDecl.RemoveAnnotations<object>();
-						
-						// insert the varDecl above the do-while loop:
-						doLoop.Parent.InsertChildBefore(doLoop, varDecl, BlockStatement.StatementRole);
-					}
-				}
-				return doLoop;
-			}
-			return null;
-		}
-		#endregion
-		
-		#region switch on strings
-		static readonly IfElseStatement switchOnStringPattern = new IfElseStatement {
-			Condition = new BinaryOperatorExpression {
-				Left = new AnyNode("switchExpr"),
-				Operator = BinaryOperatorType.InEquality,
-				Right = new NullReferenceExpression()
-			},
-			TrueStatement = new BlockStatement {
-				new IfElseStatement {
-					Condition = new BinaryOperatorExpression {
-						Left = new AnyNode("cachedDict"),
-						Operator = BinaryOperatorType.Equality,
-						Right = new NullReferenceExpression()
-					},
-					TrueStatement = new AnyNode("dictCreation")
-				},
-				new IfElseStatement {
-					Condition = new InvocationExpression(new MemberReferenceExpression(new Backreference("cachedDict").ToExpression(), "TryGetValue"),
-						new NamedNode("switchVar", new IdentifierExpression(Pattern.AnyString)),
-						new DirectionExpression {
-							FieldDirection = FieldDirection.Out,
-							Expression = new IdentifierExpression(Pattern.AnyString).WithName("intVar")
-						}),
-					TrueStatement = new BlockStatement {
-						Statements = {
-							new NamedNode(
-								"switch", new SwitchStatement {
-									Expression = new IdentifierExpressionBackreference("intVar"),
-									SwitchSections = { new Repeat(new AnyNode()) }
-								})
-						}
-					}
-				},
-				new Repeat(new AnyNode("nonNullDefaultStmt")).ToStatement()
-			},
-			FalseStatement = new OptionalNode("nullStmt", new BlockStatement { Statements = { new Repeat(new AnyNode()) } })
-		};
-		
-		public SwitchStatement TransformSwitchOnString(IfElseStatement node)
-		{
-			Match m = switchOnStringPattern.Match(node);
-			if (!m.Success)
-				return null;
-			// switchVar must be the same as switchExpr; or switchExpr must be an assignment and switchVar the left side of that assignment
-			if (!m.Get("switchVar").Single().IsMatch(m.Get("switchExpr").Single())) {
-				AssignmentExpression assign = m.Get("switchExpr").Single() as AssignmentExpression;
-				if (!(assign != null && m.Get("switchVar").Single().IsMatch(assign.Left)))
-					return null;
-			}
-			FieldReference cachedDictField = m.Get<AstNode>("cachedDict").Single().Annotation<FieldReference>();
-			if (cachedDictField == null)
-				return null;
-			List<Statement> dictCreation = m.Get<BlockStatement>("dictCreation").Single().Statements.ToList();
-			List<KeyValuePair<string, int>> dict = BuildDictionary(dictCreation);
-			SwitchStatement sw = m.Get<SwitchStatement>("switch").Single();
-			sw.Expression = m.Get<Expression>("switchExpr").Single().Detach();
-			foreach (SwitchSection section in sw.SwitchSections) {
-				List<CaseLabel> labels = section.CaseLabels.ToList();
-				section.CaseLabels.Clear();
-				foreach (CaseLabel label in labels) {
-					PrimitiveExpression expr = label.Expression as PrimitiveExpression;
-					if (expr == null || !(expr.Value is int))
-						continue;
-					int val = (int)expr.Value;
-					foreach (var pair in dict) {
-						if (pair.Value == val)
-							section.CaseLabels.Add(new CaseLabel { Expression = new PrimitiveExpression(pair.Key) });
-					}
-				}
-			}
-			if (m.Has("nullStmt")) {
-				SwitchSection section = new SwitchSection();
-				section.CaseLabels.Add(new CaseLabel { Expression = new NullReferenceExpression() });
-				BlockStatement block = m.Get<BlockStatement>("nullStmt").Single();
-				block.Statements.Add(new BreakStatement());
-				section.Statements.Add(block.Detach());
-				sw.SwitchSections.Add(section);
-			} else if (m.Has("nonNullDefaultStmt")) {
-				sw.SwitchSections.Add(
-					new SwitchSection {
-						CaseLabels = { new CaseLabel { Expression = new NullReferenceExpression() } },
-						Statements = { new BlockStatement { new BreakStatement() } }
-					});
-			}
-			if (m.Has("nonNullDefaultStmt")) {
-				SwitchSection section = new SwitchSection();
-				section.CaseLabels.Add(new CaseLabel());
-				BlockStatement block = new BlockStatement();
-				block.Statements.AddRange(m.Get<Statement>("nonNullDefaultStmt").Select(s => s.Detach()));
-				block.Add(new BreakStatement());
-				section.Statements.Add(block);
-				sw.SwitchSections.Add(section);
-			}
-			node.ReplaceWith(sw);
-			return sw;
-		}
-		
-		List<KeyValuePair<string, int>> BuildDictionary(List<Statement> dictCreation)
-		{
-			if (context.Settings.ObjectOrCollectionInitializers && dictCreation.Count == 1)
-				return BuildDictionaryFromInitializer(dictCreation[0]);
 
-			return BuildDictionaryFromAddMethodCalls(dictCreation);
+		bool DescendIntoStatement(AstNode node)
+		{
+			if (node is Expression || node is ExpressionStatement)
+				return false;
+			if (node is WhileStatement || node is ForeachStatement || node is DoWhileStatement || node is ForStatement)
+				return false;
+			return true;
 		}
 
-		static readonly Statement assignInitializedDictionary = new ExpressionStatement {
-			Expression = new AssignmentExpression {
-				Left = new AnyNode().ToExpression(),
-				Right = new ObjectCreateExpression {
-					Type = new AnyNode(),
-					Arguments = { new Repeat(new AnyNode()) },
-					Initializer = new ArrayInitializerExpression {
-						Elements = { new Repeat(new AnyNode("dictJumpTable")) }
-					}
-				},
-			},
-		};
-
-		private List<KeyValuePair<string, int>> BuildDictionaryFromInitializer(Statement statement)
+		bool ForStatementUsesVariable(ForStatement statement, IL.ILVariable variable)
 		{
-			List<KeyValuePair<string, int>> dict = new List<KeyValuePair<string, int>>();
-			Match m = assignInitializedDictionary.Match(statement);
-			if (!m.Success)
-				return dict;
-
-			foreach (ArrayInitializerExpression initializer in m.Get<ArrayInitializerExpression>("dictJumpTable")) {
-				KeyValuePair<string, int> pair;
-				if (TryGetPairFrom(initializer.Elements, out pair))
-					dict.Add(pair);
-			}
-
-			return dict;
-		}
-
-		private static List<KeyValuePair<string, int>> BuildDictionaryFromAddMethodCalls(List<Statement> dictCreation)
-		{
-			List<KeyValuePair<string, int>> dict = new List<KeyValuePair<string, int>>();
-			for (int i = 0; i < dictCreation.Count; i++) {
-				ExpressionStatement es = dictCreation[i] as ExpressionStatement;
-				if (es == null)
-					continue;
-				InvocationExpression ie = es.Expression as InvocationExpression;
-				if (ie == null)
-					continue;
-
-				KeyValuePair<string, int> pair;
-				if (TryGetPairFrom(ie.Arguments, out pair))
-					dict.Add(pair);
-			}
-			return dict;
-		}
-
-		private static bool TryGetPairFrom(AstNodeCollection<Expression> expressions, out KeyValuePair<string, int> pair)
-		{
-			PrimitiveExpression arg1 = expressions.ElementAtOrDefault(0) as PrimitiveExpression;
-			PrimitiveExpression arg2 = expressions.ElementAtOrDefault(1) as PrimitiveExpression;
-			if (arg1 != null && arg2 != null && arg1.Value is string && arg2.Value is int) {
-				pair = new KeyValuePair<string, int>((string)arg1.Value, (int)arg2.Value);
+			if (statement.Condition.DescendantsAndSelf.OfType<IdentifierExpression>().Any(ie => ie.GetILVariable() == variable))
 				return true;
-			}
-
-			pair = default(KeyValuePair<string, int>);
+			if (statement.Iterators.Any(i => i.DescendantsAndSelf.OfType<IdentifierExpression>().Any(ie => ie.GetILVariable() == variable)))
+				return true;
 			return false;
 		}
+		#endregion
+
+		#region foreach
+
+		static readonly ForStatement forOnArrayPattern = new ForStatement {
+			Initializers = {
+				new ExpressionStatement(
+				new AssignmentExpression(
+					new NamedNode("indexVariable", new IdentifierExpression(Pattern.AnyString)),
+					new PrimitiveExpression(0)
+				))
+			},
+			Condition = new BinaryOperatorExpression(
+				new IdentifierExpressionBackreference("indexVariable"),
+				BinaryOperatorType.LessThan,
+				new MemberReferenceExpression(new NamedNode("arrayVariable", new IdentifierExpression(Pattern.AnyString)), "Length")
+			),
+			Iterators = {
+				new ExpressionStatement(
+				new AssignmentExpression(
+					new IdentifierExpressionBackreference("indexVariable"),
+					new BinaryOperatorExpression(new IdentifierExpressionBackreference("indexVariable"), BinaryOperatorType.Add, new PrimitiveExpression(1))
+				))
+			},
+			EmbeddedStatement = new BlockStatement {
+				Statements = {
+					new ExpressionStatement(new AssignmentExpression(
+						new NamedNode("itemVariable", new IdentifierExpression(Pattern.AnyString)),
+						new IndexerExpression(new IdentifierExpressionBackreference("arrayVariable"), new IdentifierExpressionBackreference("indexVariable"))
+					)),
+					new Repeat(new AnyNode("statements"))
+				}
+			}
+		};
+
+		Statement TransformForeachOnArray(ForStatement forStatement)
+		{
+			if (!context.Settings.ForEachStatement) return null;
+			Match m = forOnArrayPattern.Match(forStatement);
+			if (!m.Success) return null;
+			var itemVariable = m.Get<IdentifierExpression>("itemVariable").Single().GetILVariable();
+			var indexVariable = m.Get<IdentifierExpression>("indexVariable").Single().GetILVariable();
+			var arrayVariable = m.Get<IdentifierExpression>("arrayVariable").Single().GetILVariable();
+			var loopContainer = forStatement.Annotation<IL.BlockContainer>();
+			if (itemVariable == null || indexVariable == null || arrayVariable == null)
+				return null;
+			if (!itemVariable.IsSingleDefinition || (itemVariable.CaptureScope != null && itemVariable.CaptureScope != loopContainer))
+				return null;
+			if (indexVariable.StoreCount != 2 || indexVariable.LoadCount != 3 || indexVariable.AddressCount != 0)
+				return null;
+			var body = new BlockStatement();
+			foreach (var statement in m.Get<Statement>("statements"))
+				body.Statements.Add(statement.Detach());
+			var foreachStmt = new ForeachStatement {
+				VariableType = context.Settings.AnonymousTypes && itemVariable.Type.ContainsAnonymousType() ? new SimpleType("var") : context.TypeSystemAstBuilder.ConvertType(itemVariable.Type),
+				VariableName = itemVariable.Name,
+				InExpression = m.Get<IdentifierExpression>("arrayVariable").Single().Detach(),
+				EmbeddedStatement = body
+			};
+			foreachStmt.CopyAnnotationsFrom(forStatement);
+			itemVariable.Kind = IL.VariableKind.ForeachLocal;
+			// Add the variable annotation for highlighting (TokenTextWriter expects it directly on the ForeachStatement).
+			foreachStmt.AddAnnotation(new ILVariableResolveResult(itemVariable, itemVariable.Type));
+			// TODO : add ForeachAnnotation
+			forStatement.ReplaceWith(foreachStmt);
+			return foreachStmt;
+		}
+
+		static readonly ForStatement forOnArrayMultiDimPattern = new ForStatement {
+			Initializers = { },
+			Condition = new BinaryOperatorExpression(
+				new NamedNode("indexVariable", new IdentifierExpression(Pattern.AnyString)),
+				BinaryOperatorType.LessThanOrEqual,
+				new NamedNode("upperBoundVariable", new IdentifierExpression(Pattern.AnyString))
+			),
+			Iterators = {
+				new ExpressionStatement(
+				new AssignmentExpression(
+					new IdentifierExpressionBackreference("indexVariable"),
+					new BinaryOperatorExpression(new IdentifierExpressionBackreference("indexVariable"), BinaryOperatorType.Add, new PrimitiveExpression(1))
+				))
+			},
+			EmbeddedStatement = new BlockStatement { Statements = { new AnyNode("lowerBoundAssign"), new Repeat(new AnyNode("statements")) } }
+		};
+
+		/// <summary>
+		/// $variable = $collection.GetUpperBound($index);
+		/// </summary>
+		static readonly AstNode variableAssignUpperBoundPattern = new ExpressionStatement(
+			new AssignmentExpression(
+				new NamedNode("variable", new IdentifierExpression(Pattern.AnyString)),
+				new InvocationExpression(
+					new MemberReferenceExpression(
+						new NamedNode("collection", new IdentifierExpression(Pattern.AnyString)),
+						"GetUpperBound"
+					),
+					new NamedNode("index", new PrimitiveExpression(PrimitiveExpression.AnyValue))
+			)));
+
+		/// <summary>
+		/// $variable = $collection.GetLowerBound($index);
+		/// </summary>
+		static readonly ExpressionStatement variableAssignLowerBoundPattern = new ExpressionStatement(
+			new AssignmentExpression(
+				new NamedNode("variable", new IdentifierExpression(Pattern.AnyString)),
+				new InvocationExpression(
+					new MemberReferenceExpression(
+						new NamedNode("collection", new IdentifierExpression(Pattern.AnyString)),
+						"GetLowerBound"
+					),
+					new NamedNode("index", new PrimitiveExpression(PrimitiveExpression.AnyValue))
+			)));
+
+		/// <summary>
+		/// $variable = $collection[$index1, $index2, ...];
+		/// </summary>
+		static readonly ExpressionStatement foreachVariableOnMultArrayAssignPattern = new ExpressionStatement(
+			new AssignmentExpression(
+				new NamedNode("variable", new IdentifierExpression(Pattern.AnyString)),
+				new IndexerExpression(
+					new NamedNode("collection", new IdentifierExpression(Pattern.AnyString)),
+					new Repeat(new NamedNode("index", new IdentifierExpression(Pattern.AnyString))
+				)
+			)));
+
+		bool MatchLowerBound(int indexNum, out IL.ILVariable index, IL.ILVariable collection, Statement statement)
+		{
+			index = null;
+			var m = variableAssignLowerBoundPattern.Match(statement);
+			if (!m.Success) return false;
+			if (!int.TryParse(m.Get<PrimitiveExpression>("index").Single().Value.ToString(), out int i) || indexNum != i)
+				return false;
+			index = m.Get<IdentifierExpression>("variable").Single().GetILVariable();
+			return m.Get<IdentifierExpression>("collection").Single().GetILVariable() == collection;
+		}
+
+		bool MatchForeachOnMultiDimArray(IL.ILVariable[] upperBounds, IL.ILVariable collection, Statement firstInitializerStatement, out IdentifierExpression foreachVariable, out IList<Statement> statements, out IL.ILVariable[] lowerBounds)
+		{
+			int i = 0;
+			foreachVariable = null;
+			statements = null;
+			lowerBounds = new IL.ILVariable[upperBounds.Length];
+			Statement stmt = firstInitializerStatement;
+			Match m = default(Match);
+			while (i < upperBounds.Length && MatchLowerBound(i, out IL.ILVariable indexVariable, collection, stmt)) {
+				m = forOnArrayMultiDimPattern.Match(stmt.GetNextStatement());
+				if (!m.Success) return false;
+				var upperBound = m.Get<IdentifierExpression>("upperBoundVariable").Single().GetILVariable();
+				if (upperBounds[i] != upperBound)
+					return false;
+				stmt = m.Get<Statement>("lowerBoundAssign").Single();
+				lowerBounds[i] = indexVariable;
+				i++;
+			}
+			var m2 = foreachVariableOnMultArrayAssignPattern.Match(stmt);
+			if (!m2.Success)
+				return false;
+			var collection2 = m2.Get<IdentifierExpression>("collection").Single().GetILVariable();
+			if (collection2 != collection)
+				return false;
+			foreachVariable = m2.Get<IdentifierExpression>("variable").Single();
+			statements = m.Get<Statement>("statements").ToList();
+			return true;
+		}
+
+		Statement TransformForeachOnMultiDimArray(ExpressionStatement expressionStatement)
+		{
+			if (!context.Settings.ForEachStatement) return null;
+			Match m;
+			Statement stmt = expressionStatement;
+			IL.ILVariable collection = null;
+			IL.ILVariable[] upperBounds = null;
+			List<Statement> statementsToDelete = new List<Statement>();
+			int i = 0;
+			// first we look for all the upper bound initializations
+			do {
+				m = variableAssignUpperBoundPattern.Match(stmt);
+				if (!m.Success) break;
+				if (upperBounds == null) {
+					collection = m.Get<IdentifierExpression>("collection").Single().GetILVariable();
+					if (!(collection?.Type is Decompiler.TypeSystem.ArrayType arrayType))
+						break;
+					upperBounds = new IL.ILVariable[arrayType.Dimensions];
+				} else {
+					statementsToDelete.Add(stmt);
+				}
+				var nextCollection = m.Get<IdentifierExpression>("collection").Single().GetILVariable();
+				if (nextCollection != collection)
+					break;
+				if (!int.TryParse(m.Get<PrimitiveExpression>("index").Single().Value?.ToString() ?? "", out int index) || index != i)
+					break;
+				upperBounds[i] = m.Get<IdentifierExpression>("variable").Single().GetILVariable();
+				stmt = stmt.GetNextStatement();
+				i++;
+			} while (stmt != null && i < upperBounds.Length);
+
+			if (upperBounds?.LastOrDefault() == null || collection == null)
+				return null;
+			if (!MatchForeachOnMultiDimArray(upperBounds, collection, stmt, out var foreachVariable, out var statements, out var lowerBounds))
+				return null;
+			statementsToDelete.Add(stmt);
+			statementsToDelete.Add(stmt.GetNextStatement());
+			var itemVariable = foreachVariable.GetILVariable();
+			if (itemVariable == null || !itemVariable.IsSingleDefinition
+				|| !upperBounds.All(ub => ub.IsSingleDefinition && ub.LoadCount == 1)
+				|| !lowerBounds.All(lb => lb.StoreCount == 2 && lb.LoadCount == 3 && lb.AddressCount == 0))
+				return null;
+			var body = new BlockStatement();
+			foreach (var statement in statements)
+				body.Statements.Add(statement.Detach());
+			var foreachStmt = new ForeachStatement {
+				VariableType = context.Settings.AnonymousTypes && itemVariable.Type.ContainsAnonymousType() ? new SimpleType("var") : context.TypeSystemAstBuilder.ConvertType(itemVariable.Type),
+				VariableName = itemVariable.Name,
+				InExpression = m.Get<IdentifierExpression>("collection").Single().Detach(),
+				EmbeddedStatement = body
+			};
+			foreach (var statement in statementsToDelete)
+				statement.Detach();
+			//foreachStmt.CopyAnnotationsFrom(forStatement);
+			itemVariable.Kind = IL.VariableKind.ForeachLocal;
+			// Add the variable annotation for highlighting (TokenTextWriter expects it directly on the ForeachStatement).
+			foreachStmt.AddAnnotation(new ILVariableResolveResult(itemVariable, itemVariable.Type));
+			// TODO : add ForeachAnnotation
+			expressionStatement.ReplaceWith(foreachStmt);
+			return foreachStmt;
+		}
 
 		#endregion
-		
+
 		#region Automatic Properties
 		static readonly PropertyDeclaration automaticPropertyPattern = new PropertyDeclaration {
 			Attributes = { new Repeat(new AnyNode()) },
@@ -468,31 +489,40 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			}
 		};
 
-		PropertyDeclaration TransformAutomaticProperties(PropertyDeclaration property)
+		PropertyDeclaration TransformAutomaticProperties(PropertyDeclaration propertyDeclaration)
 		{
-			PropertyDefinition cecilProperty = context.TypeSystem.GetCecil(property.GetSymbol() as IProperty) as PropertyDefinition;
-			if (cecilProperty == null || cecilProperty.GetMethod == null)
+			IProperty property = propertyDeclaration.GetSymbol() as IProperty;
+			if (!property.CanGet || (!property.Getter.IsCompilerGenerated() && (property.Setter?.IsCompilerGenerated() == false)))
 				return null;
-			if (!cecilProperty.GetMethod.IsCompilerGenerated() && (cecilProperty.SetMethod?.IsCompilerGenerated() == false))
-				return null;
-			IField fieldInfo = null;
-			Match m = automaticPropertyPattern.Match(property);
+			IField field = null;
+			Match m = automaticPropertyPattern.Match(propertyDeclaration);
 			if (m.Success) {
-				fieldInfo = m.Get<AstNode>("fieldReference").Single().GetSymbol() as IField;
+				field = m.Get<AstNode>("fieldReference").Single().GetSymbol() as IField;
 			} else {
-				Match m2 = automaticReadonlyPropertyPattern.Match(property);
+				Match m2 = automaticReadonlyPropertyPattern.Match(propertyDeclaration);
 				if (m2.Success) {
-					fieldInfo = m2.Get<AstNode>("fieldReference").Single().GetSymbol() as IField;
+					field = m2.Get<AstNode>("fieldReference").Single().GetSymbol() as IField;
 				}
 			}
-			if (fieldInfo == null)
+			if (field == null)
 				return null;
-			FieldDefinition field = context.TypeSystem.GetCecil(fieldInfo) as FieldDefinition;
-			if (field.IsCompilerGenerated() && field.DeclaringType == cecilProperty.DeclaringType) {
-				RemoveCompilerGeneratedAttribute(property.Getter.Attributes);
-				RemoveCompilerGeneratedAttribute(property.Setter.Attributes);
-				property.Getter.Body = null;
-				property.Setter.Body = null;
+			if (field.IsCompilerGenerated() && field.DeclaringTypeDefinition == property.DeclaringTypeDefinition) {
+				RemoveCompilerGeneratedAttribute(propertyDeclaration.Getter.Attributes);
+				RemoveCompilerGeneratedAttribute(propertyDeclaration.Setter.Attributes);
+				propertyDeclaration.Getter.Body = null;
+				propertyDeclaration.Setter.Body = null;
+
+				// Add C# 7.3 attributes on backing field:
+				var attributes = field.GetAttributes()
+					.Where(a => !attributeTypesToRemoveFromAutoProperties.Contains(a.AttributeType.FullName))
+					.Select(context.TypeSystemAstBuilder.ConvertAttribute).ToArray();
+				if (attributes.Length > 0) {
+					var section = new AttributeSection {
+						AttributeTarget = "field"
+					};
+					section.Attributes.AddRange(attributes);
+					propertyDeclaration.Attributes.Add(section);
+				}
 			}
 			// Since the property instance is not changed, we can continue in the visitor as usual, so return null
 			return null;
@@ -516,56 +546,87 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					section.Remove();
 			}
 		}
+		#endregion
 
-		ExpressionStatement ReplaceBackingFieldUsage(ExpressionStatement expressionStatement)
+		public override AstNode VisitIdentifier(Identifier identifier)
 		{
-			foreach (var identifier in expressionStatement.Descendants.OfType<Identifier>()) {
-				if (identifier.Name.StartsWith("<") && identifier.Name.EndsWith(">k__BackingField")) {
-					var parent = identifier.Parent;
-					var mrr = parent.Annotation<MemberResolveResult>();
-					var field = mrr?.Member as IField;
-					if (field != null && field.IsCompilerGenerated()) {
-						var propertyName = identifier.Name.Substring(1, identifier.Name.Length - 1 - ">k__BackingField".Length);
-						var property = field.DeclaringTypeDefinition.GetProperties(p => p.Name == propertyName, GetMemberOptions.IgnoreInheritedMembers).FirstOrDefault();
-						if (property != null) {
-							identifier.ReplaceWith(Identifier.Create(propertyName));
-							parent.RemoveAnnotations<MemberResolveResult>();
-							parent.AddAnnotation(new MemberResolveResult(mrr.TargetResult, property));
-						}
+			if (context.Settings.AutomaticProperties) {
+				var newIdentifier = ReplaceBackingFieldUsage(identifier);
+				if (newIdentifier != null) {
+					identifier.ReplaceWith(newIdentifier);
+					return newIdentifier;
+				}
+			}
+			if (context.Settings.AutomaticEvents) {
+				var newIdentifier = ReplaceEventFieldAnnotation(identifier);
+				if (newIdentifier != null)
+					return newIdentifier;
+			}
+			return base.VisitIdentifier(identifier);
+		}
+
+		internal static bool IsBackingFieldOfAutomaticProperty(IField field, out IProperty property)
+		{
+			property = null;
+			if (!(field.Name.StartsWith("<") && field.Name.EndsWith(">k__BackingField")))
+				return false;
+			if (!field.IsCompilerGenerated())
+				return false;
+			var propertyName = field.Name.Substring(1, field.Name.Length - 1 - ">k__BackingField".Length);
+			property = field.DeclaringTypeDefinition
+				.GetProperties(p => p.Name == propertyName, GetMemberOptions.IgnoreInheritedMembers).FirstOrDefault();
+			return property != null;
+		}
+
+		Identifier ReplaceBackingFieldUsage(Identifier identifier)
+		{
+			if (identifier.Name.StartsWith("<") && identifier.Name.EndsWith(">k__BackingField")) {
+				var parent = identifier.Parent;
+				var mrr = parent.Annotation<MemberResolveResult>();
+				var field = mrr?.Member as IField;
+				if (field != null && field.IsCompilerGenerated()) {
+					var propertyName = identifier.Name.Substring(1, identifier.Name.Length - 1 - ">k__BackingField".Length);
+					var property = field.DeclaringTypeDefinition.GetProperties(p => p.Name == propertyName, GetMemberOptions.IgnoreInheritedMembers).FirstOrDefault();
+					if (property != null) {
+						parent.RemoveAnnotations<MemberResolveResult>();
+						parent.AddAnnotation(new MemberResolveResult(mrr.TargetResult, property));
+						return Identifier.Create(propertyName);
 					}
 				}
 			}
 			return null;
 		}
 
-		ExpressionStatement ReplaceEventFieldAnnotation(ExpressionStatement expressionStatement)
+		Identifier ReplaceEventFieldAnnotation(Identifier identifier)
 		{
-			foreach (var identifier in expressionStatement.Descendants.OfType<Identifier>()) {
-				var parent = identifier.Parent;
-				var mrr = parent.Annotation<MemberResolveResult>();
-				var field = mrr?.Member as IField;
-				if (field == null) continue;
-				var @event = field.DeclaringType.GetEvents(ev => ev.Name == field.Name, GetMemberOptions.IgnoreInheritedMembers).SingleOrDefault();
-				if (@event != null) {
-					parent.RemoveAnnotations<MemberResolveResult>();
-					parent.AddAnnotation(new MemberResolveResult(mrr.TargetResult, @event));
-				}
+			var parent = identifier.Parent;
+			var mrr = parent.Annotation<MemberResolveResult>();
+			var field = mrr?.Member as IField;
+			if (field == null)
+				return null;
+			var @event = field.DeclaringType.GetEvents(ev => ev.Name == field.Name, GetMemberOptions.IgnoreInheritedMembers).SingleOrDefault();
+			if (@event != null) {
+				parent.RemoveAnnotations<MemberResolveResult>();
+				parent.AddAnnotation(new MemberResolveResult(mrr.TargetResult, @event));
+				return identifier;
 			}
 			return null;
 		}
-		#endregion
 
 		#region Automatic Events
+		static readonly Expression fieldReferencePattern = new Choice {
+			new IdentifierExpression(Pattern.AnyString),
+			new MemberReferenceExpression {
+				Target = new Choice { new ThisReferenceExpression(), new TypeReferenceExpression { Type = new AnyNode() } },
+				MemberName = Pattern.AnyString
+			}
+		};
+
 		static readonly Accessor automaticEventPatternV2 = new Accessor {
 			Attributes = { new Repeat(new AnyNode()) },
 			Body = new BlockStatement {
 				new AssignmentExpression {
-					Left = new NamedNode(
-						"field",
-						new MemberReferenceExpression {
-							Target = new Choice { new ThisReferenceExpression(), new TypeReferenceExpression { Type = new AnyNode() } },
-							MemberName = Pattern.AnyString
-						}),
+					Left = new NamedNode("field", fieldReferencePattern),
 					Operator = AssignmentOperatorType.Assign,
 					Right = new CastExpression(
 						new AnyNode("type"),
@@ -581,15 +642,9 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				new AssignmentExpression {
 					Left = new NamedNode("var1", new IdentifierExpression(Pattern.AnyString)),
 					Operator = AssignmentOperatorType.Assign,
-					Right = new NamedNode(
-						"field",
-						new MemberReferenceExpression {
-							Target = new Choice { new ThisReferenceExpression(), new TypeReferenceExpression { Type = new AnyNode() } },
-							MemberName = Pattern.AnyString
-						})
+					Right = new NamedNode("field", fieldReferencePattern)
 				},
-				new WhileStatement {
-					Condition = new PrimitiveExpression(true),
+				new DoWhileStatement {
 					EmbeddedStatement = new BlockStatement {
 						new AssignmentExpression(new NamedNode("var2", new IdentifierExpression(Pattern.AnyString)), new IdentifierExpressionBackreference("var1")),
 						new AssignmentExpression {
@@ -600,32 +655,80 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						new AssignmentExpression {
 							Left = new IdentifierExpressionBackreference("var1"),
 							Right = new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new TypePattern(typeof(System.Threading.Interlocked)).ToType()),
-								"CompareExchange",
-								new AstType[] { new Backreference("type") }), // type argument
+								"CompareExchange"),
 								new Expression[] { // arguments
 									new DirectionExpression { FieldDirection = FieldDirection.Ref, Expression = new Backreference("field") },
 									new IdentifierExpressionBackreference("var3"),
 									new IdentifierExpressionBackreference("var2")
 								}
-							)},
-						new IfElseStatement {
-							Condition = new BinaryOperatorExpression {
-								Left = new CastExpression(new TypePattern(typeof(object)), new IdentifierExpressionBackreference("var1")),
-								Operator = BinaryOperatorType.Equality,
-								Right = new IdentifierExpressionBackreference("var2")
-							},
-							TrueStatement = new BreakStatement()
-						}
-					}
+							)}
+					},
+					Condition = new BinaryOperatorExpression {
+						Left = new CastExpression(new TypePattern(typeof(object)), new IdentifierExpressionBackreference("var1")),
+						Operator = BinaryOperatorType.InEquality,
+						Right = new IdentifierExpressionBackreference("var2")
+					},
 				}
-			}};
-		
+			}
+		};
+
+		static readonly Accessor automaticEventPatternV4MCS = new Accessor {
+			Attributes = { new Repeat(new AnyNode()) },
+			Body = new BlockStatement {
+				new AssignmentExpression {
+					Left = new NamedNode("var1", new IdentifierExpression(Pattern.AnyString)),
+					Operator = AssignmentOperatorType.Assign,
+					Right = new NamedNode(
+						"field",
+						new MemberReferenceExpression {
+								Target = new Choice { new ThisReferenceExpression(), new TypeReferenceExpression { Type = new AnyNode() } },
+								MemberName = Pattern.AnyString
+						}
+					)
+				},
+				new DoWhileStatement {
+					EmbeddedStatement = new BlockStatement {
+						new AssignmentExpression(new NamedNode("var2", new IdentifierExpression(Pattern.AnyString)), new IdentifierExpressionBackreference("var1")),
+						new AssignmentExpression {
+							Left = new IdentifierExpressionBackreference("var1"),
+							Right = new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new TypePattern(typeof(System.Threading.Interlocked)).ToType()),
+								"CompareExchange",
+								new AstType[] { new Repeat(new AnyNode()) }), // optional type arguments
+								new Expression[] { // arguments
+									new DirectionExpression { FieldDirection = FieldDirection.Ref, Expression = new Backreference("field") },
+									new CastExpression(new AnyNode("type"), new InvocationExpression(new AnyNode("delegateCombine").ToExpression(), new IdentifierExpressionBackreference("var2"), new IdentifierExpression("value"))),
+									new IdentifierExpressionBackreference("var1")
+								}
+							)
+						}
+					},
+					Condition = new BinaryOperatorExpression {
+						Left = new CastExpression(new TypePattern(typeof(object)), new IdentifierExpressionBackreference("var1")),
+						Operator = BinaryOperatorType.InEquality,
+						Right = new IdentifierExpressionBackreference("var2")
+					},
+				}
+			}
+		};
+
 		bool CheckAutomaticEventMatch(Match m, CustomEventDeclaration ev, bool isAddAccessor)
 		{
 			if (!m.Success)
 				return false;
-			if (m.Get<MemberReferenceExpression>("field").Single().MemberName != ev.Name)
-				return false; // field name must match event name
+			Expression fieldExpression = m.Get<Expression>("field").Single();
+			// field name must match event name
+			switch (fieldExpression) {
+				case IdentifierExpression identifier:
+					if (identifier.Identifier != ev.Name)
+						return false;
+					break;
+				case MemberReferenceExpression memberRef:
+					if (memberRef.MemberName != ev.Name)
+						return false;
+					break;
+				default:
+					return false;
+			}
 			if (!ev.ReturnType.IsMatch(m.Get("type").Single()))
 				return false; // variable types must match event type
 			var combineMethod = m.Get<AstNode>("delegateCombine").Single().Parent.GetSymbol() as IMethod;
@@ -640,25 +743,39 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			"System.Runtime.CompilerServices.MethodImplAttribute"
 		};
 
-		bool CheckAutomaticEventV4(CustomEventDeclaration ev, out Match addMatch, out Match removeMatch)
+		static readonly string[] attributeTypesToRemoveFromAutoProperties = new[] {
+			"System.Runtime.CompilerServices.CompilerGeneratedAttribute",
+			"System.Diagnostics.DebuggerBrowsableAttribute"
+		};
+
+		bool CheckAutomaticEventV4(CustomEventDeclaration ev)
 		{
-			addMatch = removeMatch = default(Match);
-			addMatch = automaticEventPatternV4.Match(ev.AddAccessor);
+			Match addMatch = automaticEventPatternV4.Match(ev.AddAccessor);
 			if (!CheckAutomaticEventMatch(addMatch, ev, true))
 				return false;
-			removeMatch = automaticEventPatternV4.Match(ev.RemoveAccessor);
+			Match removeMatch = automaticEventPatternV4.Match(ev.RemoveAccessor);
 			if (!CheckAutomaticEventMatch(removeMatch, ev, false))
 				return false;
 			return true;
 		}
 
-		bool CheckAutomaticEventV2(CustomEventDeclaration ev, out Match addMatch, out Match removeMatch)
+		bool CheckAutomaticEventV2(CustomEventDeclaration ev)
 		{
-			addMatch = removeMatch = default(Match);
-			addMatch = automaticEventPatternV2.Match(ev.AddAccessor);
+			Match addMatch = automaticEventPatternV2.Match(ev.AddAccessor);
 			if (!CheckAutomaticEventMatch(addMatch, ev, true))
 				return false;
-			removeMatch = automaticEventPatternV2.Match(ev.RemoveAccessor);
+			Match removeMatch = automaticEventPatternV2.Match(ev.RemoveAccessor);
+			if (!CheckAutomaticEventMatch(removeMatch, ev, false))
+				return false;
+			return true;
+		}
+
+		bool CheckAutomaticEventV4MCS(CustomEventDeclaration ev)
+		{
+			Match addMatch = automaticEventPatternV4MCS.Match(ev.AddAccessor);
+			if (!CheckAutomaticEventMatch(addMatch, ev, true))
+				return false;
+			Match removeMatch = automaticEventPatternV4MCS.Match(ev.RemoveAccessor);
 			if (!CheckAutomaticEventMatch(removeMatch, ev, false))
 				return false;
 			return true;
@@ -666,9 +783,12 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 		EventDeclaration TransformAutomaticEvents(CustomEventDeclaration ev)
 		{
-			Match m1, m2;
-			if (!CheckAutomaticEventV4(ev, out m1, out m2) && !CheckAutomaticEventV2(ev, out m1, out m2))
+			if (!ev.PrivateImplementationType.IsNull)
 				return null;
+			if (!ev.Modifiers.HasFlag(Modifiers.Abstract)) {
+				if (!CheckAutomaticEventV4(ev) && !CheckAutomaticEventV2(ev) && !CheckAutomaticEventV4MCS(ev))
+					return null;
+			}
 			RemoveCompilerGeneratedAttribute(ev.AddAccessor.Attributes, attributeTypesToRemoveFromAutoEvents);
 			EventDeclaration ed = new EventDeclaration();
 			ev.Attributes.MoveTo(ed.Attributes);
@@ -686,8 +806,8 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				IField field = eventDef.DeclaringType.GetFields(f => f.Name == ev.Name, GetMemberOptions.IgnoreInheritedMembers).SingleOrDefault();
 				if (field != null) {
 					ed.AddAnnotation(field);
-					var attributes = field.Attributes
-							.Where(a => !attributeTypesToRemoveFromAutoEvents.Any(t => t == a.AttributeType.FullName))
+					var attributes = field.GetAttributes()
+							.Where(a => !attributeTypesToRemoveFromAutoEvents.Contains(a.AttributeType.FullName))
 							.Select(context.TypeSystemAstBuilder.ConvertAttribute).ToArray();
 					if (attributes.Length > 0) {
 						var section = new AttributeSection {
@@ -703,23 +823,25 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			return ed;
 		}
 		#endregion
-		
+
 		#region Destructor
+		static readonly BlockStatement destructorBodyPattern = new BlockStatement {
+			new TryCatchStatement {
+				TryBlock = new AnyNode("body"),
+				FinallyBlock = new BlockStatement {
+					new InvocationExpression(new MemberReferenceExpression(new BaseReferenceExpression(), "Finalize"))
+				}
+			}
+		};
+
 		static readonly MethodDeclaration destructorPattern = new MethodDeclaration {
 			Attributes = { new Repeat(new AnyNode()) },
 			Modifiers = Modifiers.Any,
 			ReturnType = new PrimitiveType("void"),
 			Name = "Finalize",
-			Body = new BlockStatement {
-				new TryCatchStatement {
-					TryBlock = new AnyNode("body"),
-					FinallyBlock = new BlockStatement {
-						new InvocationExpression(new MemberReferenceExpression(new BaseReferenceExpression(), "Finalize"))
-					}
-				}
-			}
+			Body = destructorBodyPattern
 		};
-		
+
 		DestructorDeclaration TransformDestructor(MethodDeclaration methodDef)
 		{
 			Match m = destructorPattern.Match(methodDef);
@@ -735,8 +857,18 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			}
 			return null;
 		}
+
+		DestructorDeclaration TransformDestructorBody(DestructorDeclaration dtorDef)
+		{
+			Match m = destructorBodyPattern.Match(dtorDef.Body);
+			if (m.Success) {
+				dtorDef.Body = m.Get<BlockStatement>("body").Single().Detach();
+				return dtorDef;
+			}
+			return null;
+		}
 		#endregion
-		
+
 		#region Try-Catch-Finally
 		static readonly TryCatchStatement tryCatchFinallyPattern = new TryCatchStatement {
 			TryBlock = new BlockStatement {

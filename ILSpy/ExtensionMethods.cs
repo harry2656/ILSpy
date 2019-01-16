@@ -18,7 +18,6 @@
 
 using System;
 using System.Collections.Generic;
-using Mono.Cecil;
 using ICSharpCode.ILSpy.Options;
 
 namespace ICSharpCode.ILSpy
@@ -64,6 +63,31 @@ namespace ICSharpCode.ILSpy
 			return ~start;
 		}
 
+		public static int BinarySearch<T, TKey>(this IList<T> instance, TKey itemKey, Func<T, TKey> keySelector)
+			where TKey : IComparable<TKey>, IComparable
+		{
+			if (instance == null)
+				throw new ArgumentNullException(nameof(instance));
+			if (keySelector == null)
+				throw new ArgumentNullException(nameof(keySelector));
+
+			int start = 0;
+			int end = instance.Count - 1;
+
+			while (start <= end) {
+				int m = (start + end) / 2;
+				TKey key = keySelector(instance[m]);
+				int result = key.CompareTo(itemKey);
+				if (result == 0)
+					return m;
+				if (result < 0)
+					start = m + 1;
+				else
+					end = m - 1;
+			}
+			return ~start;
+		}
+		/*
 		public static bool IsCustomAttribute(this TypeDefinition type)
 		{
 			while (type.FullName != "System.Object") {
@@ -76,13 +100,41 @@ namespace ICSharpCode.ILSpy
 			}
 			return false;
 		}
-		
-		public static string ToSuffixString(this MetadataToken token)
+		*/
+		public static string ToSuffixString(this System.Reflection.Metadata.EntityHandle handle)
 		{
 			if (!DisplaySettingsPanel.CurrentDisplaySettings.ShowMetadataTokens)
 				return string.Empty;
-			
-			return " @" + token.ToInt32().ToString("x8");
+
+			int token = System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken(handle);
+			if (DisplaySettingsPanel.CurrentDisplaySettings.ShowMetadataTokensInBase10)
+				return " @" + token;
+			return " @" + token.ToString("x8");
+		}
+
+		public static string ToSuffixString(this System.Reflection.Metadata.MethodDefinitionHandle handle)
+		{
+			return ToSuffixString((System.Reflection.Metadata.EntityHandle)handle);
+		}
+
+		public static string ToSuffixString(this System.Reflection.Metadata.PropertyDefinitionHandle handle)
+		{
+			return ToSuffixString((System.Reflection.Metadata.EntityHandle)handle);
+		}
+
+		public static string ToSuffixString(this System.Reflection.Metadata.EventDefinitionHandle handle)
+		{
+			return ToSuffixString((System.Reflection.Metadata.EntityHandle)handle);
+		}
+
+		public static string ToSuffixString(this System.Reflection.Metadata.FieldDefinitionHandle handle)
+		{
+			return ToSuffixString((System.Reflection.Metadata.EntityHandle)handle);
+		}
+
+		public static string ToSuffixString(this System.Reflection.Metadata.TypeDefinitionHandle handle)
+		{
+			return ToSuffixString((System.Reflection.Metadata.EntityHandle)handle);
 		}
 
 		/// <summary>
@@ -94,6 +146,20 @@ namespace ICSharpCode.ILSpy
 			if (string.IsNullOrEmpty(s) || length >= s.Length)
 				return s;
 			return s.Substring(0, length) + "...";
+		}
+
+		/// <summary>
+		/// Equivalent to <code>collection.Select(func).ToArray()</code>, but more efficient as it makes
+		/// use of the input collection's known size.
+		/// </summary>
+		public static U[] SelectArray<T, U>(this ICollection<T> collection, Func<T, U> func)
+		{
+			U[] result = new U[collection.Count];
+			int index = 0;
+			foreach (var element in collection) {
+				result[index++] = func(element);
+			}
+			return result;
 		}
 	}
 }

@@ -1,6 +1,4 @@
 
-//  Microsoft (R) .NET Framework IL Disassembler.  Version 4.0.30319.18020
-//  Copyright (c) Microsoft Corporation.  All rights reserved.
 
 
 
@@ -25,14 +23,12 @@
   .ver 0:0:0:0
 }
 .module CheckedUnchecked.dll
-// MVID: {99C747B4-9547-452B-8101-128D75599E60}
 .custom instance void [mscorlib]System.Security.UnverifiableCodeAttribute::.ctor() = ( 01 00 00 00 ) 
 .imagebase 0x10000000
 .file alignment 0x00000200
 .stackreserve 0x00100000
 .subsystem 0x0003       // WINDOWS_CUI
 .corflags 0x00000001    //  ILONLY
-// Image base: 0x02FB0000
 
 
 // =============== CLASS MEMBERS DECLARATION ===================
@@ -128,7 +124,7 @@
     .custom instance void [mscorlib]System.Diagnostics.DebuggerHiddenAttribute::.ctor() = ( 01 00 00 00 ) 
     // Code size       52 (0x34)
     .maxstack  8
-    IL_0000:  ldc.i4     0xf0268823
+    IL_0000:  ldc.i4     0x9256c2a8
     IL_0005:  ldc.i4     0xa5555529
     IL_000a:  mul
     IL_000b:  call       class [mscorlib]System.Collections.Generic.EqualityComparer`1<!0> class [mscorlib]System.Collections.Generic.EqualityComparer`1<!'<x>j__TPar'>::get_Default()
@@ -628,6 +624,72 @@
     IL_000f:  ret
   } // end of method CheckedUnchecked::CheckedInArrayCreationArgument
 
+  .method public hidebysig instance int16 
+          Unbox(valuetype [mscorlib]System.TypeCode c,
+                object b) cil managed
+  {
+    // Code size       89 (0x59)
+    .maxstack  2
+    .locals init (valuetype [mscorlib]System.TypeCode V_0,
+             int16 V_1,
+             float32 V_2)
+    IL_0000:  nop
+    IL_0001:  nop
+    IL_0002:  ldarg.1
+    IL_0003:  stloc.0
+    IL_0004:  ldloc.0
+    IL_0005:  ldc.i4.s   9
+    IL_0007:  beq.s      IL_0019
+
+    IL_0009:  br.s       IL_000b
+
+    IL_000b:  ldloc.0
+    IL_000c:  ldc.i4.s   10
+    IL_000e:  beq.s      IL_0028
+
+    IL_0010:  br.s       IL_0012
+
+    IL_0012:  ldloc.0
+    IL_0013:  ldc.i4.s   14
+    IL_0015:  beq.s      IL_0037
+
+    IL_0017:  br.s       IL_0051
+
+    IL_0019:  ldarg.2
+    IL_001a:  castclass  class ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1<int32>
+    IL_001f:  ldfld      !0 class ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1<int32>::Value
+    IL_0024:  conv.ovf.i2
+    IL_0025:  stloc.1
+    IL_0026:  br.s       IL_0057
+
+    IL_0028:  ldarg.2
+    IL_0029:  castclass  class ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1<uint32>
+    IL_002e:  ldfld      !0 class ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1<uint32>::Value
+    IL_0033:  conv.ovf.i2.un
+    IL_0034:  stloc.1
+    IL_0035:  br.s       IL_0057
+
+    IL_0037:  nop
+    IL_0038:  ldarg.2
+    IL_0039:  castclass  class ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1<float64>
+    IL_003e:  ldfld      !0 class ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1<float64>::Value
+    IL_0043:  conv.r4
+    IL_0044:  stloc.2
+    IL_0045:  ldloc.2
+    IL_0046:  call       void [mscorlib]System.Console::WriteLine(float32)
+    IL_004b:  nop
+    IL_004c:  ldloc.2
+    IL_004d:  conv.ovf.i2
+    IL_004e:  stloc.1
+    IL_004f:  br.s       IL_0057
+
+    IL_0051:  newobj     instance void [mscorlib]System.Exception::.ctor()
+    IL_0056:  throw
+
+    IL_0057:  ldloc.1
+    IL_0058:  ret
+  } // end of method CheckedUnchecked::Unbox
+
   .method public hidebysig specialname rtspecialname 
           instance void  .ctor() cil managed
   {
@@ -640,6 +702,23 @@
   } // end of method CheckedUnchecked::.ctor
 
 } // end of class ICSharpCode.Decompiler.Tests.TestCases.Pretty.CheckedUnchecked
+
+.class private auto ansi beforefieldinit ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1<T>
+       extends [mscorlib]System.Object
+{
+  .field public initonly !T Value
+  .method public hidebysig specialname rtspecialname 
+          instance void  .ctor() cil managed
+  {
+    // Code size       8 (0x8)
+    .maxstack  8
+    IL_0000:  ldarg.0
+    IL_0001:  call       instance void [mscorlib]System.Object::.ctor()
+    IL_0006:  nop
+    IL_0007:  ret
+  } // end of method Box`1::.ctor
+
+} // end of class ICSharpCode.Decompiler.Tests.TestCases.Pretty.Box`1
 
 
 // =============================================================

@@ -21,6 +21,8 @@ namespace ICSharpCode.Decompiler.TypeSystem
 	public enum SymbolKind : byte
 	{
 		None,
+		/// <seealso cref="IModule"/>
+		Module,
 		/// <seealso cref="ITypeDefinition"/>
 		TypeDefinition,
 		/// <seealso cref="IField"/>
@@ -84,15 +86,5 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		/// Gets the short name of the symbol.
 		/// </summary>
 		string Name { get; }
-		
-		/// <summary>
-		/// Creates a symbol reference that can be used to rediscover this symbol in another compilation.
-		/// </summary>
-		ISymbolReference ToReference();
-	}
-	
-	public interface ISymbolReference
-	{
-		ISymbol Resolve(ITypeResolveContext context);
 	}
 }

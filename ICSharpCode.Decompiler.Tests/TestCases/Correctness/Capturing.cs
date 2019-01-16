@@ -1,8 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 {
@@ -16,6 +13,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			TestCase4("TestCase4");
 			OutsideLoop();
 			InsideLoop();
+			OutsideLoopOverArray();
+			OutsideLoopOverArray2();
+			InsideLoopOverArray2();
+			NotWhileDueToVariableInsideLoop();
+			NotDoWhileDueToVariableInsideLoop();
 		}
 
 		static void TestCase1()
@@ -119,6 +121,93 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			}
 			foreach (var func in functions) {
 				Console.WriteLine(func());
+			}
+		}
+
+		static void OutsideLoopOverArray()
+		{
+			Console.WriteLine("OutsideLoopOverArray:");
+			var functions = new List<Func<int>>();
+			var array = new int[] { 1, 2, 3 };
+			int val; // declared outside loop
+					 // The decompiler cannot convert this to a foreach-loop without
+					 // changing the lambda capture semantics.
+			for (int i = 0; i < array.Length; ++i) {
+				val = array[i];
+				functions.Add(() => val);
+			}
+			foreach (var func in functions) {
+				Console.WriteLine(func());
+			}
+		}
+
+		static void OutsideLoopOverArray2()
+		{
+			Console.WriteLine("OutsideLoopOverArray2:");
+			var functions = new List<Func<int>>();
+			var array = new int[] { 1, 2, 3 };
+			int val; // declared outside loop
+					 // The decompiler can convert this to a foreach-loop, but the 'val'
+					 // variable must be declared outside.
+			for (int i = 0; i < array.Length; ++i) {
+				int element = array[i];
+				val = element * 2;
+				functions.Add(() => val);
+			}
+			foreach (var func in functions) {
+				Console.WriteLine(func());
+			}
+		}
+
+		static void InsideLoopOverArray2()
+		{
+			Console.WriteLine("InsideLoopOverArray2:");
+			var functions = new List<Func<int>>();
+			var array = new int[] { 1, 2, 3 };
+			for (int i = 0; i < array.Length; ++i) {
+				int element = array[i];
+				int val = element * 2;
+				functions.Add(() => val);
+			}
+			foreach (var func in functions) {
+				Console.WriteLine(func());
+			}
+		}
+
+		static int nextVal;
+
+		static int GetVal()
+		{
+			return ++nextVal & 7;
+		}
+
+		static void NotWhileDueToVariableInsideLoop()
+		{
+			Console.WriteLine("NotWhileDueToVariableInsideLoop:");
+			var functions = new List<Func<int>>();
+			while (true) {
+				int v;
+				if ((v = GetVal()) == 0)
+					break;
+				functions.Add(() => v);
+			}
+			foreach (var f in functions) {
+				Console.WriteLine(f());
+			}
+		}
+
+		static void NotDoWhileDueToVariableInsideLoop()
+		{
+			Console.WriteLine("NotDoWhileDueToVariableInsideLoop:");
+			var functions = new List<Func<int>>();
+			while (true) {
+				int v = GetVal();
+				functions.Add(() => v);
+				if (v == 0)
+					break;
+			}
+			foreach (var f in functions) {
+				Console.WriteLine(f());
 			}
 		}
 	}

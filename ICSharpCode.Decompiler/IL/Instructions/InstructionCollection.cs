@@ -135,14 +135,18 @@ namespace ICSharpCode.Decompiler.IL
 		/// Returns -1 if the instruction does not exist in the collection.
 		/// </summary>
 		/// <remarks>
-		/// Runs in O(1) is the item can be found using the Parent/ChildIndex properties.
+		/// Runs in O(1) if the item can be found using the Parent/ChildIndex properties.
 		/// Otherwise, runs in O(N).
 		/// </remarks>
 		public int IndexOf(T item)
 		{
+			if (item == null) {
+				// InstructionCollection can't contain nulls
+				return -1;
+			}
 			// If this collection is the item's primary position, we can use ChildIndex:
 			int index = item.ChildIndex - firstChildIndex;
-			if (index >= 0 && index <= list.Count && list[index] == item)
+			if (index >= 0 && index < list.Count && list[index] == item)
 				return index;
 			// But we still need to fall back on a full search, because the ILAst might be
 			// in a state where item is in multiple locations.
@@ -329,7 +333,41 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return removed;
 		}
-		
+
+		public void MoveElementToIndex(int oldIndex, int newIndex)
+		{
+			parentInstruction.AssertNoEnumerators();
+			var item = list[oldIndex];
+			Insert(newIndex, item);
+			if (oldIndex < newIndex)
+				RemoveAt(oldIndex);
+			else
+				RemoveAt(oldIndex + 1);
+		}
+
+		public void MoveElementToIndex(T item, int newIndex)
+		{
+			parentInstruction.AssertNoEnumerators();
+			int oldIndex = IndexOf(item);
+			if (oldIndex >= 0) {
+				Insert(newIndex, item);
+				if (oldIndex < newIndex)
+					RemoveAt(oldIndex);
+				else
+					RemoveAt(oldIndex + 1);
+			}
+		}
+
+		public void MoveElementToEnd(int index)
+		{
+			MoveElementToIndex(index, list.Count);
+		}
+
+		public void MoveElementToEnd(T item)
+		{
+			MoveElementToIndex(item, list.Count);
+		}
+
 		// more efficient versions of some LINQ methods:
 		public T First()
 		{

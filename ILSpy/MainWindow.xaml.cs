@@ -20,10 +20,10 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
-using System.ComponentModel.Composition;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection.Metadata;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -31,13 +31,16 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Documentation;
+using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.Decompiler.TypeSystem.Implementation;
 using ICSharpCode.ILSpy.TextView;
 using ICSharpCode.ILSpy.TreeNodes;
 using ICSharpCode.TreeView;
 using Microsoft.Win32;
-using Mono.Cecil;
 
 namespace ICSharpCode.ILSpy
 {
@@ -46,6 +49,7 @@ namespace ICSharpCode.ILSpy
 	/// </summary>
 	partial class MainWindow : Window
 	{
+		bool refreshInProgress;
 		readonly NavigationHistory<NavigationState> history = new NavigationHistory<NavigationState>();
 		ILSpySettings spySettings;
 		internal SessionSettings sessionSettings;
@@ -54,8 +58,7 @@ namespace ICSharpCode.ILSpy
 		AssemblyList assemblyList;
 		AssemblyListTreeNode assemblyListTreeNode;
 		
-		[Import]
-		DecompilerTextView decompilerTextView = null;
+		readonly DecompilerTextView decompilerTextView;
 		
 		static MainWindow instance;
 		
@@ -79,7 +82,7 @@ namespace ICSharpCode.ILSpy
 			this.DataContext = sessionSettings;
 			
 			InitializeComponent();
-			App.CompositionContainer.ComposeParts(this);
+			decompilerTextView = App.ExportProvider.GetExportedValue<DecompilerTextView>();
 			mainPane.Content = decompilerTextView;
 			
 			if (sessionSettings.SplitterPosition > 0 && sessionSettings.SplitterPosition < 1) {
@@ -104,13 +107,12 @@ namespace ICSharpCode.ILSpy
 		}
 		
 		#region Toolbar extensibility
-		[ImportMany("ToolbarCommand", typeof(ICommand))]
-		Lazy<ICommand, IToolbarCommandMetadata>[] toolbarCommands = null;
 		
 		void InitToolbar()
 		{
 			int navigationPos = 0;
 			int openPos = 1;
+			var toolbarCommands = App.ExportProvider.GetExports<ICommand, IToolbarCommandMetadata>("ToolbarCommand");
 			foreach (var commandGroup in toolbarCommands.OrderBy(c => c.Metadata.ToolbarOrder).GroupBy(c => c.Metadata.ToolbarCategory)) {
 				if (commandGroup.Key == "Navigation") {
 					foreach (var command in commandGroup) {
@@ -147,11 +149,10 @@ namespace ICSharpCode.ILSpy
 		#endregion
 		
 		#region Main Menu extensibility
-		[ImportMany("MainMenuCommand", typeof(ICommand))]
-		Lazy<ICommand, IMainMenuCommandMetadata>[] mainMenuCommands = null;
 		
 		void InitMainMenu()
 		{
+			var mainMenuCommands = App.ExportProvider.GetExports<ICommand, IMainMenuCommandMetadata>("MainMenuCommand");
 			foreach (var topLevelMenu in mainMenuCommands.OrderBy(c => c.Metadata.MenuOrder).GroupBy(c => c.Metadata.Menu)) {
 				var topLevelMenuItem = mainMenu.Items.OfType<MenuItem>().FirstOrDefault(m => (m.Header as string) == topLevelMenu.Key);
 				foreach (var category in topLevelMenu.GroupBy(c => c.Metadata.MenuCategory)) {
@@ -244,9 +245,21 @@ namespace ICSharpCode.ILSpy
 		public event NotifyCollectionChangedEventHandler CurrentAssemblyListChanged;
 		
 		List<LoadedAssembly> commandLineLoadedAssemblies = new List<LoadedAssembly>();
+
+		List<string> nugetPackagesToLoad = new List<string>();
 		
 		bool HandleCommandLineArguments(CommandLineArguments args)
 		{
+			int i = 0;
+			while (i < args.AssembliesToLoad.Count) {
+				var asm = args.AssembliesToLoad[i];
+				if (Path.GetExtension(asm) == ".nupkg") {
+					nugetPackagesToLoad.Add(asm);
+					args.AssembliesToLoad.RemoveAt(i);
+				} else {
+					i++;
+				}
+			}
 			LoadAssemblies(args.AssembliesToLoad, commandLineLoadedAssemblies, false);
 			if (args.Language != null)
 				sessionSettings.FilterSettings.Language = Languages.GetLanguage(args.Language);
@@ -255,15 +268,11 @@ namespace ICSharpCode.ILSpy
 		
 		void HandleCommandLineArgumentsAfterShowList(CommandLineArguments args)
 		{
-			// if a SaveDirectory is given, do not start a second concurrent decompilation
-			// by executing JumpoToReference (leads to https://github.com/icsharpcode/ILSpy/issues/710)
-			if (!string.IsNullOrEmpty(args.SaveDirectory)) {
-				foreach (var x in commandLineLoadedAssemblies) {
-					x.ContinueWhenLoaded((Task<ModuleDefinition> moduleTask) => {
-						OnExportAssembly(moduleTask, args.SaveDirectory);
-					}, TaskScheduler.FromCurrentSynchronizationContext());
-				}
-			} else if (args.NavigateTo != null) {
+			if (nugetPackagesToLoad.Count > 0) {
+				LoadAssemblies(nugetPackagesToLoad, commandLineLoadedAssemblies, focusNode: false);
+				nugetPackagesToLoad.Clear();
+			}
+			if (args.NavigateTo != null) {
 				bool found = false;
 				if (args.NavigateTo.StartsWith("N:", StringComparison.Ordinal)) {
 					string namespaceName = args.NavigateTo.Substring(2);
@@ -279,13 +288,29 @@ namespace ICSharpCode.ILSpy
 						}
 					}
 				} else {
+					ITypeReference typeRef = null;
+					IMemberReference memberRef = null;
+					if (args.NavigateTo.StartsWith("T:", StringComparison.Ordinal)) {
+						typeRef = IdStringProvider.ParseTypeName(args.NavigateTo);
+					} else {
+						memberRef = IdStringProvider.ParseMemberIdString(args.NavigateTo);
+						typeRef = memberRef.DeclaringTypeReference;
+					}
 					foreach (LoadedAssembly asm in commandLineLoadedAssemblies) {
-						ModuleDefinition def = asm.ModuleDefinition;
-						if (def != null) {
-							MemberReference mr = XmlDocKeyProvider.FindMemberByKey(def, args.NavigateTo);
-							if (mr != null) {
+						var module = asm.GetPEFileOrNull();
+						if (CanResolveTypeInPEFile(module, typeRef, out var typeHandle)) {
+							IEntity mr = null;
+							ICompilation compilation = typeHandle.Kind == HandleKind.ExportedType
+								? new DecompilerTypeSystem(module, module.GetAssemblyResolver())
+								: new SimpleCompilation(module, MinimalCorlib.Instance);
+							mr = memberRef == null
+								? typeRef.Resolve(new SimpleTypeResolveContext(compilation)) as ITypeDefinition
+								: (IEntity)memberRef.Resolve(new SimpleTypeResolveContext(compilation));
+							if (mr != null && mr.ParentModule.PEFile != null) {
 								found = true;
-								JumpToReference(mr);
+								// Defer JumpToReference call to allow an assembly that was loaded while
+								// resolving a type-forwarder in FindMemberByKey to appear in the assembly list.
+								Dispatcher.BeginInvoke(new Action(() => JumpToReference(mr)), DispatcherPriority.Loaded);
 								break;
 							}
 						}
@@ -299,7 +324,7 @@ namespace ICSharpCode.ILSpy
 			} else if (commandLineLoadedAssemblies.Count == 1) {
 				// NavigateTo == null and an assembly was given on the command-line:
 				// Select the newly loaded assembly
-				JumpToReference(commandLineLoadedAssemblies[0].ModuleDefinition);
+				JumpToReference(commandLineLoadedAssemblies[0].GetPEFileOrNull());
 			}
 			if (args.Search != null)
 			{
@@ -308,21 +333,28 @@ namespace ICSharpCode.ILSpy
 			}
 			commandLineLoadedAssemblies.Clear(); // clear references once we don't need them anymore
 		}
-		
-		void OnExportAssembly(Task<ModuleDefinition> moduleTask, string path)
+
+		private bool CanResolveTypeInPEFile(PEFile module, ITypeReference typeRef, out EntityHandle typeHandle)
 		{
-			AssemblyTreeNode asmNode = assemblyListTreeNode.FindAssemblyNode(moduleTask.Result);
-			if (asmNode != null) {
-				string file = DecompilerTextView.CleanUpName(asmNode.LoadedAssembly.ShortName);
-				Language language = sessionSettings.FilterSettings.Language;
-				DecompilationOptions options = new DecompilationOptions();
-				options.FullDecompilation = true;
-				options.SaveAsProjectDirectory = Path.Combine(App.CommandLineArguments.SaveDirectory, file);
-				if (!Directory.Exists(options.SaveAsProjectDirectory)) {
-					Directory.CreateDirectory(options.SaveAsProjectDirectory);
-				}
-				string fullFile = Path.Combine(options.SaveAsProjectDirectory, file + language.ProjectFileExtension);
-				TextView.SaveToDisk(language, new[] { asmNode }, options, fullFile);
+			switch (typeRef) {
+				case GetPotentiallyNestedClassTypeReference topLevelType:
+					typeHandle = topLevelType.ResolveInPEFile(module);
+					return !typeHandle.IsNil;
+				case NestedTypeReference nestedType:
+					if (!CanResolveTypeInPEFile(module, nestedType.DeclaringTypeReference, out typeHandle))
+						return false;
+					if (typeHandle.Kind == HandleKind.ExportedType)
+						return true;
+					var typeDef = module.Metadata.GetTypeDefinition((TypeDefinitionHandle)typeHandle);
+					typeHandle = typeDef.GetNestedTypes().FirstOrDefault(t => {
+						var td = module.Metadata.GetTypeDefinition(t);
+						var typeName = ReflectionHelper.SplitTypeParameterCountFromReflectionName(module.Metadata.GetString(td.Name), out int typeParameterCount);
+						return nestedType.AdditionalTypeParameterCount == typeParameterCount && nestedType.Name == typeName;
+					});
+					return !typeHandle.IsNil;
+				default:
+					typeHandle = default;
+					return false;
 			}
 		}
 
@@ -330,28 +362,38 @@ namespace ICSharpCode.ILSpy
 		{
 			ILSpySettings spySettings = this.spySettings;
 			this.spySettings = null;
-			
+
 			// Load AssemblyList only in Loaded event so that WPF is initialized before we start the CPU-heavy stuff.
 			// This makes the UI come up a bit faster.
 			this.assemblyList = assemblyListManager.LoadList(spySettings, sessionSettings.ActiveAssemblyList);
-			
+
 			HandleCommandLineArguments(App.CommandLineArguments);
-			
+
 			if (assemblyList.GetAssemblies().Length == 0
-				&& assemblyList.ListName == AssemblyListManager.DefaultListName)
-			{
+				&& assemblyList.ListName == AssemblyListManager.DefaultListName) {
 				LoadInitialAssemblies();
 			}
-			
+
 			ShowAssemblyList(this.assemblyList);
-			
+
+			if (sessionSettings.ActiveAutoLoadedAssembly != null) {
+				this.assemblyList.Open(sessionSettings.ActiveAutoLoadedAssembly, true);
+			}
+
+			Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => OpenAssemblies(spySettings)));
+#if DEBUG
+			this.Title = $"ILSpy {RevisionClass.FullVersion}";
+#endif
+		}
+
+		void OpenAssemblies(ILSpySettings spySettings)
+		{
 			HandleCommandLineArgumentsAfterShowList(App.CommandLineArguments);
 			if (App.CommandLineArguments.NavigateTo == null && App.CommandLineArguments.AssembliesToLoad.Count != 1) {
 				SharpTreeNode node = null;
 				if (sessionSettings.ActiveTreeViewPath != null) {
 					node = FindNodeByPath(sessionSettings.ActiveTreeViewPath, true);
 					if (node == this.assemblyListTreeNode && sessionSettings.ActiveAutoLoadedAssembly != null) {
-						this.assemblyList.Open(sessionSettings.ActiveAutoLoadedAssembly, true);
 						node = FindNodeByPath(sessionSettings.ActiveTreeViewPath, true);
 					}
 				}
@@ -507,7 +549,7 @@ namespace ICSharpCode.ILSpy
 		void filterSettings_PropertyChanged(object sender, PropertyChangedEventArgs e)
 		{
 			RefreshTreeViewFilter();
-			if (e.PropertyName == "Language") {
+			if (e.PropertyName == "Language" || e.PropertyName == "LanguageVersion") {
 				DecompileSelectedNodes(recordHistory: false);
 			}
 		}
@@ -594,41 +636,23 @@ namespace ICSharpCode.ILSpy
 		
 		public ILSpyTreeNode FindTreeNode(object reference)
 		{
-			if (reference is TypeReference)
-			{
-				return assemblyListTreeNode.FindTypeNode(((TypeReference)reference).Resolve());
-			}
-			else if (reference is MethodReference)
-			{
-				return assemblyListTreeNode.FindMethodNode(((MethodReference)reference).Resolve());
-			}
-			else if (reference is FieldReference)
-			{
-				return assemblyListTreeNode.FindFieldNode(((FieldReference)reference).Resolve());
-			}
-			else if (reference is PropertyReference)
-			{
-				return assemblyListTreeNode.FindPropertyNode(((PropertyReference)reference).Resolve());
-			}
-			else if (reference is EventReference)
-			{
-				return assemblyListTreeNode.FindEventNode(((EventReference)reference).Resolve());
-			}
-			else if (reference is AssemblyDefinition)
-			{
-				return assemblyListTreeNode.FindAssemblyNode((AssemblyDefinition)reference);
-			}
-			else if (reference is ModuleDefinition)
-			{
-				return assemblyListTreeNode.FindAssemblyNode((ModuleDefinition)reference);
-			}
-			else if (reference is Resource)
-			{
-				return assemblyListTreeNode.FindResourceNode((Resource)reference);
-			}
-			else
-			{
-				return null;
+			switch (reference) {
+				case PEFile asm:
+					return assemblyListTreeNode.FindAssemblyNode(asm);
+				case Resource res:
+					return assemblyListTreeNode.FindResourceNode(res);
+				case ITypeDefinition type:
+					return assemblyListTreeNode.FindTypeNode(type);
+				case IField fd:
+					return assemblyListTreeNode.FindFieldNode(fd);
+				case IMethod md:
+					return assemblyListTreeNode.FindMethodNode(md);
+				case IProperty pd:
+					return assemblyListTreeNode.FindPropertyNode(pd);
+				case IEvent ed:
+					return assemblyListTreeNode.FindEventNode(ed);
+				default:
+					return null;
 			}
 		}
 		
@@ -647,12 +671,20 @@ namespace ICSharpCode.ILSpy
 		public Task JumpToReferenceAsync(object reference)
 		{
 			decompilationTask = TaskHelper.CompletedTask;
-			ILSpyTreeNode treeNode = FindTreeNode(reference);
-			if (treeNode != null) {
-				SelectNode(treeNode);
-			} else if (reference is Mono.Cecil.Cil.OpCode) {
-				string link = "http://msdn.microsoft.com/library/system.reflection.emit.opcodes." + ((Mono.Cecil.Cil.OpCode)reference).Code.ToString().ToLowerInvariant() + ".aspx";
-				OpenLink(link);
+			switch (reference) {
+				case Decompiler.Disassembler.OpCodeInfo opCode:
+					OpenLink(opCode.Link);
+					break;
+				case ValueTuple<PEFile, System.Reflection.Metadata.EntityHandle> unresolvedEntity:
+					var typeSystem = new DecompilerTypeSystem(unresolvedEntity.Item1, unresolvedEntity.Item1.GetAssemblyResolver(),
+						TypeSystemOptions.Default | TypeSystemOptions.Uncached);
+					reference = typeSystem.MainModule.ResolveEntity(unresolvedEntity.Item2);
+					goto default;
+				default:
+					ILSpyTreeNode treeNode = FindTreeNode(reference);
+					if (treeNode != null)
+						SelectNode(treeNode);
+					break;
 			}
 			return decompilationTask;
 		}
@@ -668,8 +700,20 @@ namespace ICSharpCode.ILSpy
 				// just ignore all of them.
 			}
 		}
+
+		public static void ExecuteCommand(string fileName, string arguments)
+		{
+			try {
+				Process.Start(fileName, arguments);
+#pragma warning disable RECS0022 // A catch clause that catches System.Exception and has an empty body
+			} catch (Exception) {
+#pragma warning restore RECS0022 // A catch clause that catches System.Exception and has an empty body
+				// Process.Start can throw several errors (not all of them documented),
+				// just ignore all of them.
+			}
+		}
 		#endregion
-		
+
 		#region Open/Refresh
 		void OpenCommandExecuted(object sender, ExecutedRoutedEventArgs e)
 		{
@@ -743,9 +787,14 @@ namespace ICSharpCode.ILSpy
 		
 		void RefreshCommandExecuted(object sender, ExecutedRoutedEventArgs e)
 		{
-			var path = GetPathForNode(treeView.SelectedItem as SharpTreeNode);
-			ShowAssemblyList(assemblyListManager.LoadList(ILSpySettings.Load(), assemblyList.ListName));
-			SelectNode(FindNodeByPath(path, true));
+			try {
+				refreshInProgress = true;
+				var path = GetPathForNode(treeView.SelectedItem as SharpTreeNode);
+				ShowAssemblyList(assemblyListManager.LoadList(ILSpySettings.Load(), assemblyList.ListName));
+				SelectNode(FindNodeByPath(path, true));
+			} finally {
+				refreshInProgress = false;
+			}
 		}
 		
 		void SearchCommandExecuted(object sender, ExecutedRoutedEventArgs e)
@@ -770,6 +819,9 @@ namespace ICSharpCode.ILSpy
 		{
 			if (ignoreDecompilationRequests)
 				return;
+
+			if (treeView.SelectedItems.Count == 0 && refreshInProgress)
+				return;
 			
 			if (recordHistory) {
 				var dtState = decompilerTextView.GetState();
@@ -783,7 +835,7 @@ namespace ICSharpCode.ILSpy
 				if (node != null && node.View(decompilerTextView))
 					return;
 			}
-			decompilationTask = decompilerTextView.DecompileAsync(this.CurrentLanguage, this.SelectedNodes, new DecompilationOptions { TextViewState = state });
+			decompilationTask = decompilerTextView.DecompileAsync(this.CurrentLanguage, this.SelectedNodes, new DecompilationOptions() { TextViewState = state });
 		}
 		
 		void SaveCommandExecuted(object sender, ExecutedRoutedEventArgs e)
@@ -794,23 +846,25 @@ namespace ICSharpCode.ILSpy
 			}
 			this.TextView.SaveToDisk(this.CurrentLanguage,
 				this.SelectedNodes,
-				new DecompilationOptions { FullDecompilation = true });
+				new DecompilationOptions() { FullDecompilation = true });
 		}
 		
 		public void RefreshDecompiledView()
 		{
-			DecompileSelectedNodes();
+			try {
+				refreshInProgress = true;
+				DecompileSelectedNodes();
+			} finally {
+				refreshInProgress = false;
+			}
 		}
 		
 		public DecompilerTextView TextView {
 			get { return decompilerTextView; }
 		}
-		
-		public Language CurrentLanguage {
-			get {
-				return sessionSettings.FilterSettings.Language;
-			}
-		}
+
+		public Language CurrentLanguage => sessionSettings.FilterSettings.Language;
+		public LanguageVersion CurrentLanguageVersion => sessionSettings.FilterSettings.LanguageVersion;
 
 		public event SelectionChangedEventHandler SelectionChanged;
 

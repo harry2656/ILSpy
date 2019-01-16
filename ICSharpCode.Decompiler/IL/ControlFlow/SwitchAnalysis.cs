@@ -3,6 +3,7 @@ using System.Diagnostics;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
 using System;
+using System.Linq;
 
 namespace ICSharpCode.Decompiler.IL.ControlFlow
 {
@@ -38,18 +39,28 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 		public bool ContainsILSwitch { get; private set; }
 
 		/// <summary>
-		/// Gets the sections that were detected by the previoous AnalyzeBlock() call.
+		/// Gets the sections that were detected by the previous AnalyzeBlock() call.
 		/// </summary>
 		public readonly List<KeyValuePair<LongSet, ILInstruction>> Sections = new List<KeyValuePair<LongSet, ILInstruction>>();
 
+		/// <summary>
+		/// Used to de-duplicate sections with a branch instruction.
+		/// Invariant: (Sections[targetBlockToSectionIndex[branch.TargetBlock]].Instruction as Branch).TargetBlock == branch.TargetBlock
+		/// </summary>
 		readonly Dictionary<Block, int> targetBlockToSectionIndex = new Dictionary<Block, int>();
+
+		/// <summary>
+		/// Used to de-duplicate sections with a value-less leave instruction.
+		/// Invariant: (Sections[targetBlockToSectionIndex[leave.TargetContainer]].Instruction as Leave).TargetContainer == leave.TargetContainer
+		/// </summary>
+		readonly Dictionary<BlockContainer, int> targetContainerToSectionIndex = new Dictionary<BlockContainer, int>();
 
 		/// <summary>
 		/// Blocks that can be deleted if the tail of the initial block is replaced with a switch instruction.
 		/// </summary>
 		public readonly List<Block> InnerBlocks = new List<Block>();
-
-		Block rootBlock;
+		
+		public Block RootBlock { get; private set; }
 
 		/// <summary>
 		/// Analyze the last two statements in the block and see if they can be turned into a
@@ -59,8 +70,9 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 		public bool AnalyzeBlock(Block block)
 		{
 			switchVar = null;
-			rootBlock = block;
+			RootBlock = block;
 			targetBlockToSectionIndex.Clear();
+			targetContainerToSectionIndex.Clear();
 			Sections.Clear();
 			InnerBlocks.Clear();
 			ContainsILSwitch = false;
@@ -83,26 +95,29 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 		/// If false, analyze the whole block.</param>
 		bool AnalyzeBlock(Block block, LongSet inputValues, bool tailOnly = false)
 		{
+			if (block.Instructions.Count == 0) {
+				// might happen if the block was already marked for deletion in SwitchDetection
+				return false;
+			}
 			if (tailOnly) {
-				Debug.Assert(block == rootBlock);
-				if (block.Instructions.Count < 2)
-					return false;
+				Debug.Assert(block == RootBlock);
 			} else {
 				Debug.Assert(switchVar != null); // switchVar should always be determined by the top-level call
-				if (block.IncomingEdgeCount != 1 || block == rootBlock)
+				if (block.IncomingEdgeCount != 1 || block == RootBlock)
 					return false; // for now, let's only consider if-structures that form a tree
-				if (block.Instructions.Count != 2)
-					return false;
-				if (block.Parent != rootBlock.Parent)
+				if (block.Parent != RootBlock.Parent)
 					return false; // all blocks should belong to the same container
 			}
-			var inst = block.Instructions[block.Instructions.Count - 2];
-			ILInstruction condition, trueInst;
 			LongSet trueValues;
-			if (inst.MatchIfInstruction(out condition, out trueInst)
+			if (block.Instructions.Count >= 2
+				&& block.Instructions[block.Instructions.Count - 2].MatchIfInstruction(out var condition, out var trueInst)
 				&& AnalyzeCondition(condition, out trueValues)
 			) {
+				if (!(tailOnly || block.Instructions.Count == 2))
+					return false;
 				trueValues = trueValues.IntersectWith(inputValues);
+				if (trueValues.SetEquals(inputValues) || trueValues.IsEmpty)
+					return false;
 				Block trueBlock;
 				if (trueInst.MatchBranch(out trueBlock) && AnalyzeBlock(trueBlock, trueValues)) {
 					// OK, true block was further analyzed.
@@ -111,9 +126,12 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 					// Create switch section for trueInst.
 					AddSection(trueValues, trueInst);
 				}
-			} else if (inst.OpCode == OpCode.SwitchInstruction) {
-				if (AnalyzeSwitch((SwitchInstruction)inst, inputValues, out trueValues)) {
+			} else if (block.Instructions.Last() is SwitchInstruction switchInst) {
+				if (!(tailOnly || block.Instructions.Count == 1))
+					return false;
+				if (AnalyzeSwitch(switchInst, inputValues)) {
 					ContainsILSwitch = true; // OK
+					return true;
 				} else { // switch analysis failed (e.g. switchVar mismatch)
 					return false;
 				}
@@ -134,10 +152,9 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			return true;
 		}
 
-		private bool AnalyzeSwitch(SwitchInstruction inst, LongSet inputValues, out LongSet anyMatchValues)
+		private bool AnalyzeSwitch(SwitchInstruction inst, LongSet inputValues)
 		{
-			Debug.Assert(inst.DefaultBody is Nop);
-			anyMatchValues = LongSet.Empty;
+			Debug.Assert(!inst.IsLifted);
 			long offset;
 			if (MatchSwitchVar(inst.Value)) {
 				offset = 0;
@@ -163,8 +180,11 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			}
 			foreach (var section in inst.Sections) {
 				var matchValues = section.Labels.AddOffset(offset).IntersectWith(inputValues);
-				AddSection(matchValues, section.Body);
-				anyMatchValues = anyMatchValues.UnionWith(matchValues);
+				if (matchValues.Count() > 1 && section.Body.MatchBranch(out var targetBlock) && AnalyzeBlock(targetBlock, matchValues)) {
+					InnerBlocks.Add(targetBlock);
+				} else {
+					AddSection(matchValues, section.Body);
+				}
 			}
 			return true;
 		}
@@ -180,16 +200,24 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			if (values.IsEmpty) {
 				return;
 			}
-			Block targetBlock;
-			if (inst.MatchBranch(out targetBlock)) {
-				int index;
-				if (targetBlockToSectionIndex.TryGetValue(targetBlock, out index)) {
+			if (inst.MatchBranch(out Block targetBlock)) {
+				if (targetBlockToSectionIndex.TryGetValue(targetBlock, out int index)) {
 					Sections[index] = new KeyValuePair<LongSet, ILInstruction>(
 						Sections[index].Key.UnionWith(values),
 						inst
 					);
 				} else {
 					targetBlockToSectionIndex.Add(targetBlock, Sections.Count);
+					Sections.Add(new KeyValuePair<LongSet, ILInstruction>(values, inst));
+				}
+			} else if (inst.MatchLeave(out BlockContainer targetContainer)) {
+				if (targetContainerToSectionIndex.TryGetValue(targetContainer, out int index)) {
+					Sections[index] = new KeyValuePair<LongSet, ILInstruction>(
+						Sections[index].Key.UnionWith(values),
+						inst
+					);
+				} else {
+					targetContainerToSectionIndex.Add(targetContainer, Sections.Count);
 					Sections.Add(new KeyValuePair<LongSet, ILInstruction>(values, inst));
 				}
 			} else {
@@ -205,15 +233,30 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 				return inst.MatchLdLoc(out switchVar);
 		}
 
+		bool MatchSwitchVar(ILInstruction inst, out long sub)
+		{
+			if (inst is BinaryNumericInstruction bn
+				&& bn.Operator == BinaryNumericOperator.Sub
+				&& !bn.CheckForOverflow && !bn.IsLifted
+				&& bn.Right.MatchLdcI(out sub))
+			{
+				return MatchSwitchVar(bn.Left);
+			}
+
+			sub = 0;
+			return MatchSwitchVar(inst);
+		}
+
 		/// <summary>
 		/// Analyzes the boolean condition, returning the set of values of the interesting
 		/// variable for which the condition evaluates to true.
 		/// </summary>
 		private bool AnalyzeCondition(ILInstruction condition, out LongSet trueValues)
 		{
-			if (condition is Comp comp && MatchSwitchVar(comp.Left) && comp.Right.MatchLdcI(out long val)) {
-				// if (comp(V OP val))
+			if (condition is Comp comp && MatchSwitchVar(comp.Left, out var sub) && comp.Right.MatchLdcI(out long val)) {
+				// if (comp((V - sub) OP val))
 				trueValues = MakeSetWhereComparisonIsTrue(comp.Kind, val, comp.Sign);
+				trueValues = trueValues.AddOffset(sub);
 				return true;
 			} else if (MatchSwitchVar(condition)) {
 				// if (ldloc V) --> branch for all values except 0

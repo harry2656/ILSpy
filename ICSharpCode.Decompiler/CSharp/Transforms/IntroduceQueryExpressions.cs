@@ -84,7 +84,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (invocation == null)
 				return null;
 			MemberReferenceExpression mre = invocation.Target as MemberReferenceExpression;
-			if (mre == null)
+			if (mre == null || IsNullConditional(mre.Target))
 				return null;
 			switch (mre.MemberName) {
 				case "Select":
@@ -96,7 +96,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						if (MatchSimpleLambda(invocation.Arguments.Single(), out parameterName, out body)) {
 							QueryExpression query = new QueryExpression();
 							query.Clauses.Add(new QueryFromClause { Identifier = parameterName, Expression = mre.Target.Detach() });
-							query.Clauses.Add(new QuerySelectClause { Expression = body.Detach() });
+							query.Clauses.Add(new QuerySelectClause { Expression = WrapExpressionInParenthesesIfNecessary(body.Detach(), parameterName) });
 							return query;
 						}
 						return null;
@@ -135,6 +135,8 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						Expression collectionSelector;
 						if (!MatchSimpleLambda(invocation.Arguments.ElementAt(0), out parameterName, out collectionSelector))
 							return null;
+						if (IsNullConditional(collectionSelector))
+							return null;
 						LambdaExpression lambda = invocation.Arguments.ElementAt(1) as LambdaExpression;
 						if (lambda != null && lambda.Parameters.Count == 2 && lambda.Body is Expression) {
 							ParameterDeclaration p1 = lambda.Parameters.ElementAt(0);
@@ -143,7 +145,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 								QueryExpression query = new QueryExpression();
 								query.Clauses.Add(new QueryFromClause { Identifier = p1.Name, Expression = mre.Target.Detach() });
 								query.Clauses.Add(new QueryFromClause { Identifier = p2.Name, Expression = collectionSelector.Detach() });
-								query.Clauses.Add(new QuerySelectClause { Expression = ((Expression)lambda.Body).Detach() });
+								query.Clauses.Add(new QuerySelectClause { Expression = WrapExpressionInParenthesesIfNecessary(((Expression)lambda.Body).Detach(), parameterName) });
 								return query;
 							}
 						}
@@ -210,6 +212,8 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 							return null;
 						Expression source1 = mre.Target;
 						Expression source2 = invocation.Arguments.ElementAt(0);
+						if (IsNullConditional(source2))
+							return null;
 						string elementName1, elementName2;
 						Expression key1, key2;
 						if (!MatchSimpleLambda(invocation.Arguments.ElementAt(1), out elementName1, out key1))
@@ -242,7 +246,25 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					return null;
 			}
 		}
-		
+
+		bool IsNullConditional(Expression target)
+		{
+			return target is UnaryOperatorExpression uoe && uoe.Operator == UnaryOperatorType.NullConditional;
+		}
+
+		/// <summary>
+		/// This fixes #437: Decompilation of query expression loses material parentheses
+		/// We wrap the expression in parentheses if:
+		/// - the Select-call is explicit (see caller(s))
+		/// - the expression is a plain identifier matching the parameter name
+		/// </summary>
+		Expression WrapExpressionInParenthesesIfNecessary(Expression expression, string parameterName)
+		{
+			if (expression is IdentifierExpression ident && parameterName.Equals(ident.Identifier, StringComparison.Ordinal))
+				return new ParenthesizedExpression(expression);
+			return expression;
+		}
+
 		/// <summary>
 		/// Ensure that all ThenBy's are correct, and that the list of ThenBy's is terminated by an 'OrderBy' invocation.
 		/// </summary>

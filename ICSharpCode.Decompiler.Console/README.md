@@ -1,8 +1,13 @@
-# ICSharpCode.Decompiler.Console
-netcoreapp 2.0 console application using ICSharpCode.Decompiler
+# ilspycmd
 
 ```
-./ilspycmd -h
+dotnet tool install ilspycmd -g
+```
+
+.NET Core 2.1 Tool 
+
+```
+ilspycmd -h
 
 Usage:  [arguments] [options]
 
@@ -13,9 +18,10 @@ Options:
   -h|--help                   Show help information
   -p|--project                Decompile assembly as compilable project. This requires the output directory option.
   -o|--outputdir <directory>  The output directory, if omitted decompiler output is written to standard out.
-  -t|--type <type-name>       The FQN of the type to decompile.
+  -t|--type <type-name>       The fully qualified name of the type to decompile.
   -l|--list <entity-type(s)>  Lists all entities of the specified type(s). Valid types: c(lass), i(interface), s(truct),
  d(elegate), e(num)
+  -il|--ilcode				  Show IL code.	
 
 -o is valid with every option and required when using -p.
 ```

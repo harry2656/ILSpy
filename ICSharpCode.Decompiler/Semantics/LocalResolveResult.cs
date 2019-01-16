@@ -61,17 +61,12 @@ namespace ICSharpCode.Decompiler.Semantics
 		}
 		
 		public override object ConstantValue {
-			get { return IsParameter ? null : variable.ConstantValue; }
+			get { return IsParameter ? null : variable.GetConstantValue(); }
 		}
 		
 		public override string ToString()
 		{
 			return string.Format(CultureInfo.InvariantCulture, "[LocalResolveResult {0}]", variable);
-		}
-		
-		public override DomRegion GetDefinitionRegion()
-		{
-			return variable.Region;
 		}
 	}
 }

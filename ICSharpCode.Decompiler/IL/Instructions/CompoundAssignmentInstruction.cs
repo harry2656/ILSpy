@@ -18,6 +18,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Linq.Expressions;
 using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.IL
@@ -28,7 +29,35 @@ namespace ICSharpCode.Decompiler.IL
 		EvaluatesToNewValue
 	}
 
-	public partial class CompoundAssignmentInstruction : ILInstruction
+	public abstract partial class CompoundAssignmentInstruction : ILInstruction
+	{
+		public readonly CompoundAssignmentType CompoundAssignmentType;
+
+		public CompoundAssignmentInstruction(OpCode opCode, CompoundAssignmentType compoundAssignmentType, ILInstruction target, ILInstruction value)
+			: base(opCode)
+		{
+			this.CompoundAssignmentType = compoundAssignmentType;
+			this.Target = target;
+			this.Value = value;
+		}
+
+		internal static bool IsValidCompoundAssignmentTarget(ILInstruction inst)
+		{
+			switch (inst.OpCode) {
+				// case OpCode.LdLoc: -- not valid -- does not mark the variable as written to
+				case OpCode.LdObj:
+					return true;
+				case OpCode.Call:
+				case OpCode.CallVirt:
+					var owner = ((CallInstruction)inst).Method.AccessorOwner as IProperty;
+					return owner != null && owner.CanSet;
+				default:
+					return false;
+			}
+		}
+	}
+
+	public partial class NumericCompoundAssign : CompoundAssignmentInstruction, ILiftableInstruction
 	{
 		/// <summary>
 		/// Gets whether the instruction checks for overflow.
@@ -41,46 +70,92 @@ namespace ICSharpCode.Decompiler.IL
 		/// For instructions that produce the same result for either sign, returns Sign.None.
 		/// </summary>
 		public readonly Sign Sign;
-		
+
+		public readonly StackType LeftInputType;
+		public readonly StackType RightInputType;
+		public StackType UnderlyingResultType { get; }
+
 		/// <summary>
 		/// The operator used by this assignment operator instruction.
 		/// </summary>
 		public readonly BinaryNumericOperator Operator;
-		
-		public readonly CompoundAssignmentType CompoundAssignmentType;
 
-		public CompoundAssignmentInstruction(BinaryNumericOperator op, ILInstruction target, ILInstruction value, IType type, bool checkForOverflow, Sign sign, CompoundAssignmentType compoundAssigmentType)
-			: base(OpCode.CompoundAssignmentInstruction)
+		public bool IsLifted { get; }
+
+		public NumericCompoundAssign(BinaryNumericInstruction binary, ILInstruction target, ILInstruction value, IType type, CompoundAssignmentType compoundAssignmentType)
+			: base(OpCode.NumericCompoundAssign, compoundAssignmentType, target, value)
 		{
-			this.CheckForOverflow = checkForOverflow;
-			this.Sign = sign;
-			this.Operator = op;
-			this.Target = target;
+			Debug.Assert(IsBinaryCompatibleWithType(binary, type));
+			this.CheckForOverflow = binary.CheckForOverflow;
+			this.Sign = binary.Sign;
+			this.LeftInputType = binary.LeftInputType;
+			this.RightInputType = binary.RightInputType;
+			this.UnderlyingResultType = binary.UnderlyingResultType;
+			this.Operator = binary.Operator;
+			this.IsLifted = binary.IsLifted;
 			this.type = type;
-			this.Value = value;
-			this.CompoundAssignmentType = compoundAssigmentType;
-			Debug.Assert(compoundAssigmentType == CompoundAssignmentType.EvaluatesToNewValue || (op == BinaryNumericOperator.Add || op == BinaryNumericOperator.Sub));
+			this.ILRange = binary.ILRange;
+			Debug.Assert(compoundAssignmentType == CompoundAssignmentType.EvaluatesToNewValue || (Operator == BinaryNumericOperator.Add || Operator == BinaryNumericOperator.Sub));
 			Debug.Assert(IsValidCompoundAssignmentTarget(Target));
 		}
 		
-		internal static bool IsValidCompoundAssignmentTarget(ILInstruction inst)
+		/// <summary>
+		/// Gets whether the specific binary instruction is compatible with a compound operation on the specified type.
+		/// </summary>
+		internal static bool IsBinaryCompatibleWithType(BinaryNumericInstruction binary, IType type)
 		{
-			switch (inst.OpCode) {
-				case OpCode.LdLoc:
-				case OpCode.LdObj:
-					return true;
-				case OpCode.Call:
-				case OpCode.CallVirt:
-					var owner = ((CallInstruction)inst).Method.AccessorOwner as IProperty;
-					return owner != null && owner.CanSet;
-				default:
+			if (binary.IsLifted) {
+				if (!NullableType.IsNullable(type))
 					return false;
+				type = NullableType.GetUnderlyingType(type);
 			}
+			if (type.Kind == TypeKind.Unknown) {
+				return false; // avoid introducing a potentially-incorrect compound assignment
+			} else if (type.Kind == TypeKind.Enum) {
+				switch (binary.Operator) {
+					case BinaryNumericOperator.Add:
+					case BinaryNumericOperator.Sub:
+					case BinaryNumericOperator.BitAnd:
+					case BinaryNumericOperator.BitOr:
+					case BinaryNumericOperator.BitXor:
+						break; // OK
+					default:
+						return false; // operator not supported on enum types
+				}
+			} else if (type.Kind == TypeKind.Pointer) {
+				switch (binary.Operator) {
+					case BinaryNumericOperator.Add:
+					case BinaryNumericOperator.Sub:
+						// ensure that the byte offset is a multiple of the pointer size
+						return PointerArithmeticOffset.Detect(
+							binary.Right,
+							(PointerType)type,
+							checkForOverflow: binary.CheckForOverflow
+						) != null;
+					default:
+						return false; // operator not supported on pointer types
+				}
+			}
+			if (binary.Sign != Sign.None) {
+				if (type.IsCSharpSmallIntegerType()) {
+					// C# will use numeric promotion to int, binary op must be signed
+					if (binary.Sign != Sign.Signed)
+						return false;
+				} else {
+					// C# will use sign from type
+					if (type.GetSign() != binary.Sign)
+						return false;
+				}
+			}
+			// Can't transform if the RHS value would be need to be truncated for the LHS type.
+			if (Transforms.TransformAssignment.IsImplicitTruncation(binary.Right, type, null, binary.IsLifted))
+				return false;
+			return true;
 		}
 
 		protected override InstructionFlags ComputeFlags()
 		{
-			var flags = target.Flags | value.Flags | InstructionFlags.SideEffect;
+			var flags = Target.Flags | Value.Flags | InstructionFlags.SideEffect;
 			if (CheckForOverflow || (Operator == BinaryNumericOperator.Div || Operator == BinaryNumericOperator.Rem))
 				flags |= InstructionFlags.MayThrow;
 			return flags;
@@ -94,39 +169,12 @@ namespace ICSharpCode.Decompiler.IL
 				return flags;
 			}
 		}
-
-		string GetOperatorName(BinaryNumericOperator @operator)
-		{
-			switch (@operator) {
-				case BinaryNumericOperator.Add:
-					return "add";
-				case BinaryNumericOperator.Sub:
-					return "sub";
-				case BinaryNumericOperator.Mul:
-					return "mul";
-				case BinaryNumericOperator.Div:
-					return "div";
-				case BinaryNumericOperator.Rem:
-					return "rem";
-				case BinaryNumericOperator.BitAnd:
-					return "bit.and";
-				case BinaryNumericOperator.BitOr:
-					return "bit.or";
-				case BinaryNumericOperator.BitXor:
-					return "bit.xor";
-				case BinaryNumericOperator.ShiftLeft:
-					return "bit.shl";
-				case BinaryNumericOperator.ShiftRight:
-					return "bit.shr";
-				default:
-					throw new ArgumentOutOfRangeException();
-			}
-		}
-
+		
 		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
 		{
+			ILRange.WriteTo(output, options);
 			output.Write(OpCode);
-			output.Write("." + GetOperatorName(Operator));
+			output.Write("." + BinaryNumericInstruction.GetOperatorName(Operator));
 			if (CompoundAssignmentType == CompoundAssignmentType.EvaluatesToNewValue)
 				output.Write(".new");
 			else
@@ -142,6 +190,111 @@ namespace ICSharpCode.Decompiler.IL
 			output.Write(", ");
 			Value.WriteTo(output, options);
 			output.Write(')');
+		}
+	}
+
+	public partial class UserDefinedCompoundAssign : CompoundAssignmentInstruction
+	{
+		public readonly IMethod Method;
+		public bool IsLifted => false; // TODO: implement lifted user-defined compound assignments
+
+		public UserDefinedCompoundAssign(IMethod method, CompoundAssignmentType compoundAssignmentType, ILInstruction target, ILInstruction value)
+			: base(OpCode.UserDefinedCompoundAssign, compoundAssignmentType, target, value)
+		{
+			this.Method = method;
+			Debug.Assert(Method.IsOperator || IsStringConcat(method));
+			Debug.Assert(compoundAssignmentType == CompoundAssignmentType.EvaluatesToNewValue || (Method.Name == "op_Increment" || Method.Name == "op_Decrement"));
+			Debug.Assert(IsValidCompoundAssignmentTarget(Target));
+		}
+
+		public static bool IsStringConcat(IMethod method)
+		{
+			return method.Name == "Concat" && method.IsStatic && method.DeclaringType.IsKnownType(KnownTypeCode.String);
+		}
+
+		public override StackType ResultType => Method.ReturnType.GetStackType();
+
+		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		{
+			ILRange.WriteTo(output, options);
+			output.Write(OpCode);
+			
+			if (CompoundAssignmentType == CompoundAssignmentType.EvaluatesToNewValue)
+				output.Write(".new");
+			else
+				output.Write(".old");
+			output.Write(' ');
+			Method.WriteTo(output);
+			output.Write('(');
+			this.Target.WriteTo(output, options);
+			output.Write(", ");
+			this.Value.WriteTo(output, options);
+			output.Write(')');
+		}
+	}
+
+	public partial class DynamicCompoundAssign : CompoundAssignmentInstruction
+	{
+		public ExpressionType Operation { get; }
+		public CSharpArgumentInfo TargetArgumentInfo { get; }
+		public CSharpArgumentInfo ValueArgumentInfo { get; }
+		public CSharpBinderFlags BinderFlags { get; }
+
+		public DynamicCompoundAssign(ExpressionType op, CSharpBinderFlags binderFlags, ILInstruction target, CSharpArgumentInfo targetArgumentInfo, ILInstruction value, CSharpArgumentInfo valueArgumentInfo)
+			: base(OpCode.DynamicCompoundAssign, CompoundAssignmentTypeFromOperation(op), target, value)
+		{
+			if (!IsExpressionTypeSupported(op))
+				throw new ArgumentOutOfRangeException("op");
+			this.BinderFlags = binderFlags;
+			this.Operation = op;
+			this.TargetArgumentInfo = targetArgumentInfo;
+			this.ValueArgumentInfo = valueArgumentInfo;
+		}
+
+		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		{
+			ILRange.WriteTo(output, options);
+			output.Write(OpCode);
+			output.Write("." + Operation.ToString().ToLower());
+			DynamicInstruction.WriteBinderFlags(BinderFlags, output, options);
+			if (CompoundAssignmentType == CompoundAssignmentType.EvaluatesToNewValue)
+				output.Write(".new");
+			else
+				output.Write(".old");
+			output.Write(' ');
+			DynamicInstruction.WriteArgumentList(output, options, (Target, TargetArgumentInfo), (Value, ValueArgumentInfo));
+		}
+
+		internal static bool IsExpressionTypeSupported(ExpressionType type)
+		{
+			return type == ExpressionType.AddAssign
+				|| type == ExpressionType.AddAssignChecked
+				|| type == ExpressionType.AndAssign
+				|| type == ExpressionType.DivideAssign
+				|| type == ExpressionType.ExclusiveOrAssign
+				|| type == ExpressionType.LeftShiftAssign
+				|| type == ExpressionType.ModuloAssign
+				|| type == ExpressionType.MultiplyAssign
+				|| type == ExpressionType.MultiplyAssignChecked
+				|| type == ExpressionType.OrAssign
+				|| type == ExpressionType.PostDecrementAssign
+				|| type == ExpressionType.PostIncrementAssign
+				|| type == ExpressionType.PreDecrementAssign
+				|| type == ExpressionType.PreIncrementAssign
+				|| type == ExpressionType.RightShiftAssign
+				|| type == ExpressionType.SubtractAssign
+				|| type == ExpressionType.SubtractAssignChecked;
+		}
+
+		static CompoundAssignmentType CompoundAssignmentTypeFromOperation(ExpressionType op)
+		{
+			switch (op) {
+				case ExpressionType.PostIncrementAssign:
+				case ExpressionType.PostDecrementAssign:
+					return CompoundAssignmentType.EvaluatesToOldValue;
+				default:
+					return CompoundAssignmentType.EvaluatesToNewValue;
+			}
 		}
 	}
 }

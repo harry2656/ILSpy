@@ -16,7 +16,9 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Semantics;
@@ -153,15 +155,50 @@ namespace ICSharpCode.Decompiler.CSharp
 			loop.AddAnnotation(new ILVariableResolveResult(v, v.Type));
 			return loop;
 		}
+
+		public static T CopyAnnotationsFrom<T>(this T node, AstNode other) where T : AstNode
+		{
+			foreach (object annotation in other.Annotations) {
+				node.AddAnnotation(annotation);
+			}
+			return node;
+		}
+
+		public static T CopyInstructionsFrom<T>(this T node, AstNode other) where T : AstNode
+		{
+			foreach (object annotation in other.Annotations.OfType<ILInstruction>()) {
+				node.AddAnnotation(annotation);
+			}
+			return node;
+		}
 	}
 	
 	public class ILVariableResolveResult : ResolveResult
 	{
 		public readonly ILVariable Variable;
-		
-		public ILVariableResolveResult(ILVariable v, IType type) : base(type)
+
+		public ILVariableResolveResult(ILVariable v) : base(v.Type)
 		{
 			this.Variable = v;
+		}
+
+		public ILVariableResolveResult(ILVariable v, IType type) : base(type)
+		{
+			this.Variable = v ?? throw new ArgumentNullException("v");
+		}
+	}
+
+	public class ForeachAnnotation
+	{
+		public readonly ILInstruction GetEnumeratorCall;
+		public readonly ILInstruction MoveNextCall;
+		public readonly ILInstruction GetCurrentCall;
+
+		public ForeachAnnotation(ILInstruction getEnumeratorCall, ILInstruction moveNextCall, ILInstruction getCurrentCall)
+		{
+			GetEnumeratorCall = getEnumeratorCall;
+			MoveNextCall = moveNextCall;
+			GetCurrentCall = getCurrentCall;
 		}
 	}
 }

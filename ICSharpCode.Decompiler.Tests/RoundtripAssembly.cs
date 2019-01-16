@@ -20,20 +20,22 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection.PortableExecutable;
 using System.Text.RegularExpressions;
 using System.Threading;
 using ICSharpCode.Decompiler.CSharp;
+using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Tests.Helpers;
 using Microsoft.Win32;
-using Mono.Cecil;
 using NUnit.Framework;
 
 namespace ICSharpCode.Decompiler.Tests
 {
+	[TestFixture, Parallelizable(ParallelScope.All)]
 	public class RoundtripAssembly
 	{
-		static readonly string testDir = Path.GetFullPath("../../../../ILSpy-tests");
-		static readonly string nunit = Path.Combine(testDir, "nunit", "nunit3-console.exe");
+		public static readonly string TestDir = Path.GetFullPath(Path.Combine(Tester.TestCasePath, "../../ILSpy-tests"));
+		static readonly string nunit = Path.Combine(TestDir, "nunit", "nunit3-console.exe");
 		
 		[Test]
 		public void Cecil_net45()
@@ -69,7 +71,7 @@ namespace ICSharpCode.Decompiler.Tests
 			try {
 				RunWithTest("ICSharpCode.Decompiler", "ICSharpCode.Decompiler.dll", "ICSharpCode.Decompiler.Tests.exe");
 			} catch (CompilationFailedException) {
-				Assert.Ignore("C# 7 tuples not yet supported.");
+				Assert.Ignore("C# 7 local functions not yet supported.");
 			}
 		}
 
@@ -105,26 +107,30 @@ namespace ICSharpCode.Decompiler.Tests
 
 		void RunWithTest(string dir, string fileToRoundtrip, string fileToTest)
 		{
-			RunInternal(dir, fileToRoundtrip, () => RunTest(Path.Combine(testDir, dir) + "-output", fileToTest));
+			RunInternal(dir, fileToRoundtrip, outputDir => RunTest(outputDir, fileToTest));
 		}
 		
 		void RunWithOutput(string dir, string fileToRoundtrip)
 		{
-			string inputDir = Path.Combine(testDir, dir);
-			string outputDir = inputDir + "-output";
-			RunInternal(dir, fileToRoundtrip, () => Tester.RunAndCompareOutput(fileToRoundtrip, Path.Combine(inputDir, fileToRoundtrip), Path.Combine(outputDir, fileToRoundtrip)));
+			string inputDir = Path.Combine(TestDir, dir);
+			RunInternal(dir, fileToRoundtrip,
+				outputDir => Tester.RunAndCompareOutput(fileToRoundtrip, Path.Combine(inputDir, fileToRoundtrip), Path.Combine(outputDir, fileToRoundtrip)));
 		}
 		
-		void RunInternal(string dir, string fileToRoundtrip, Action testAction)
+		void RunInternal(string dir, string fileToRoundtrip, Action<string> testAction)
 		{
-			if (!Directory.Exists(testDir)) {
-				Assert.Ignore($"Assembly-roundtrip test ignored: test directory '{testDir}' needs to be checked out separately." + Environment.NewLine +
-				              $"git clone https://github.com/icsharpcode/ILSpy-tests \"{testDir}\"");
+			if (!Directory.Exists(TestDir)) {
+				Assert.Ignore($"Assembly-roundtrip test ignored: test directory '{TestDir}' needs to be checked out separately." + Environment.NewLine +
+				              $"git clone https://github.com/icsharpcode/ILSpy-tests \"{TestDir}\"");
 			}
-			string inputDir = Path.Combine(testDir, dir);
-			//RunTest(inputDir, fileToTest);
+			string inputDir = Path.Combine(TestDir, dir);
 			string decompiledDir = inputDir + "-decompiled";
 			string outputDir = inputDir + "-output";
+			if (inputDir.EndsWith("TestCases")) {
+				// make sure output dir names are unique so that we don't get trouble due to parallel test execution
+				decompiledDir += Path.GetFileNameWithoutExtension(fileToRoundtrip);
+				outputDir += Path.GetFileNameWithoutExtension(fileToRoundtrip);
+			}
 			ClearDirectory(decompiledDir);
 			ClearDirectory(outputDir);
 			string projectFile = null;
@@ -137,19 +143,19 @@ namespace ICSharpCode.Decompiler.Tests
 				if (relFile.Equals(fileToRoundtrip, StringComparison.OrdinalIgnoreCase)) {
 					Console.WriteLine($"Decompiling {fileToRoundtrip}...");
 					Stopwatch w = Stopwatch.StartNew();
-					DefaultAssemblyResolver resolver = new DefaultAssemblyResolver();
-					resolver.AddSearchDirectory(inputDir);
-					resolver.RemoveSearchDirectory(".");
-					var module = ModuleDefinition.ReadModule(file, new ReaderParameters {
-						AssemblyResolver = resolver,
-						InMemory  = true
-					});
-					var decompiler = new TestProjectDecompiler(inputDir);
-					// use a fixed GUID so that we can diff the output between different ILSpy runs without spurious changes
-					decompiler.ProjectGuid = Guid.Parse("{127C83E4-4587-4CF9-ADCA-799875F3DFE6}");
-					decompiler.DecompileProject(module, decompiledDir);
-					Console.WriteLine($"Decompiled {fileToRoundtrip} in {w.Elapsed.TotalSeconds:f2}");
-					projectFile = Path.Combine(decompiledDir, module.Assembly.Name.Name + ".csproj");
+					using (var fileStream = new FileStream(file, FileMode.Open, FileAccess.Read)) {
+						PEFile module = new PEFile(file, fileStream, PEStreamOptions.PrefetchEntireImage);
+						var resolver = new UniversalAssemblyResolver(file, false, module.Reader.DetectTargetFrameworkId(), PEStreamOptions.PrefetchMetadata);
+						resolver.AddSearchDirectory(inputDir);
+						resolver.RemoveSearchDirectory(".");
+						var decompiler = new TestProjectDecompiler(inputDir);
+						decompiler.AssemblyResolver = resolver;
+						// use a fixed GUID so that we can diff the output between different ILSpy runs without spurious changes
+						decompiler.ProjectGuid = Guid.Parse("{127C83E4-4587-4CF9-ADCA-799875F3DFE6}");
+						decompiler.DecompileProject(module, decompiledDir);
+						Console.WriteLine($"Decompiled {fileToRoundtrip} in {w.Elapsed.TotalSeconds:f2}");
+						projectFile = Path.Combine(decompiledDir, module.Name + ".csproj");
+					}
 				} else {
 					File.Copy(file, Path.Combine(outputDir, relFile));
 				}
@@ -157,7 +163,7 @@ namespace ICSharpCode.Decompiler.Tests
 			Assert.IsNotNull(projectFile, $"Could not find {fileToRoundtrip}");
 			
 			Compile(projectFile, outputDir);
-			testAction();
+			testAction(outputDir);
 		}
 
 		static void ClearDirectory(string dir)
@@ -258,11 +264,11 @@ namespace ICSharpCode.Decompiler.Tests
 				localAssemblies = new DirectoryInfo(baseDir).EnumerateFiles("*.dll").Select(f => f.FullName).ToArray();
 			}
 
-			protected override bool IsGacAssembly(AssemblyNameReference r, AssemblyDefinition asm)
+			protected override bool IsGacAssembly(IAssemblyReference r, PEFile asm)
 			{
 				if (asm == null)
 					return false;
-				return !localAssemblies.Contains(asm.MainModule.FileName);
+				return !localAssemblies.Contains(asm.FileName);
 			}
 		}
 

@@ -3,8 +3,9 @@
   <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.props" />
 
   <PropertyGroup>
-    <TargetFramework>net461</TargetFramework>
+    <TargetFramework>net46</TargetFramework>
     <AssemblyName>ILSpy.BamlDecompiler.Plugin</AssemblyName>
+    <LangVersion>7.2</LangVersion>
 
     <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
 
@@ -36,7 +37,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="AvalonEdit" Version="5.0.3" />
+    <PackageReference Include="AvalonEdit" Version="5.0.4" />
   </ItemGroup>
 
   <ItemGroup>
@@ -44,9 +45,6 @@
       <Private>False</Private>
     </ProjectReference>
     <ProjectReference Include="..\ILSpy\ILSpy.csproj">
-      <Private>False</Private>
-    </ProjectReference>
-    <ProjectReference Include="..\cecil\Mono.Cecil.csproj" AdditionalProperties="NuGetRestoreTargets=;ResolveNuGetPackages=false">
       <Private>False</Private>
     </ProjectReference>
     <ProjectReference Include="..\SharpTreeView\ICSharpCode.TreeView.csproj">
@@ -57,7 +55,7 @@
   <ItemGroup>
     <Compile Include="BamlResourceNodeFactory.cs" />
     <Compile Include="BamlResourceEntryNode.cs" />
-    <Compile Include="CecilDependencyPropertyDescriptor.cs" />
+    <Compile Include="SRMDependencyPropertyDescriptor.cs" />
     <Compile Include="CecilType.cs" />
     <Compile Include="CecilTypeResolver.cs" />
     <Compile Include="ConnectMethodDecompiler.cs" />
